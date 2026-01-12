@@ -82,11 +82,11 @@ function App() {
           <Route
             path="/dashboard"
             element={
-              /*<ProtectedRoute>*/
+              <ProtectedRoute>
               <DashboardLayout>
                 <DashboardPage />
               </DashboardLayout>
-              /*</ProtectedRoute>*/
+              </ProtectedRoute>
             }
           />
           <Route
