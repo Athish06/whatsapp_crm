@@ -11,7 +11,7 @@ import Sidebar from './components/Sidebar';
 import './App.css';
 
 const ProtectedRoute = ({ children }) => {
-  const { token, loading } = useAuth();
+  const { isAuthenticated, loading } = useAuth();
 
   if (loading) {
     return (
@@ -21,7 +21,7 @@ const ProtectedRoute = ({ children }) => {
     );
   }
 
-  if (!token) {
+  if (!isAuthenticated) {
     return <Navigate to="/" replace />;
   }
 

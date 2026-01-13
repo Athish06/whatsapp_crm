@@ -23,11 +23,12 @@ const LoginPage = () => {
       if (isLogin) {
         await login(formData.email, formData.password);
         toast.success('Login successful');
+        navigate('/dashboard');
       } else {
         await register(formData.email, formData.password, formData.full_name);
         toast.success('Registration successful');
+        navigate('/dashboard');
       }
-      navigate('/dashboard');
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Authentication failed');
     } finally {
