@@ -2,37 +2,90 @@ import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Lock, Mail, User } from 'lucide-react';
+import { Lock, Mail, User, KeyRound } from 'lucide-react';
+import { authAPI } from '../lib/api';
 
 const LoginPage = () => {
   const [isLogin, setIsLogin] = useState(true);
+  const [showOTPStep, setShowOTPStep] = useState(false);
   const [formData, setFormData] = useState({
     email: '',
     password: '',
-    full_name: ''
+    full_name: '',
+    otp: ''
   });
   const [loading, setLoading] = useState(false);
   const { login, register } = useAuth();
   const navigate = useNavigate();
 
-  const handleSubmit = async (e) => {
+  const handleSendOTP = async (e) => {
     e.preventDefault();
     setLoading(true);
 
     try {
-      if (isLogin) {
-        await login(formData.email, formData.password);
-        toast.success('Login successful');
-      } else {
-        await register(formData.email, formData.password, formData.full_name);
-        toast.success('Registration successful');
-      }
+      // First, send OTP for verification
+      await authAPI.sendOTP(formData.email);
+      toast.success('Verification code sent to your email');
+      setShowOTPStep(true);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to send verification code');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyAndRegister = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+
+    try {
+      // Verify OTP first
+      await authAPI.verifyOTP(formData.email, formData.otp);
+      
+      // Then register the user
+      await register(formData.email, formData.password, formData.full_name);
+      toast.success('Registration successful');
+      navigate('/dashboard');
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Verification failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+
+    try {
+      await login(formData.email, formData.password);
+      toast.success('Login successful');
       navigate('/dashboard');
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Authentication failed');
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleResendOTP = async () => {
+    setLoading(true);
+    try {
+      await authAPI.sendOTP(formData.email);
+      toast.success('Verification code resent');
+    } catch (error) {
+      toast.error('Failed to resend code');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleForgotPassword = () => {
+    if (!formData.email) {
+      toast.error('Please enter your email first');
+      return;
+    }
+    navigate('/forgot-password', { state: { email: formData.email } });
   };
 
   return (
@@ -59,8 +112,8 @@ const LoginPage = () => {
               </p>
             </div>
 
-            <form onSubmit={handleSubmit} className="space-y-4" data-testid="login-form">
-              {!isLogin && (
+            <form onSubmit={isLogin ? handleLogin : (showOTPStep ? handleVerifyAndRegister : handleSendOTP)} className="space-y-4" data-testid="login-form">
+              {!isLogin && !showOTPStep && (
                 <div>
                   <label className="block text-sm font-medium mb-2">
                     Full Name
@@ -74,47 +127,93 @@ const LoginPage = () => {
                       onChange={(e) => setFormData({ ...formData, full_name: e.target.value })}
                       className="w-full bg-[#121212] border border-[#2E2E2E] focus:border-[#3ECF8E] focus:ring-1 focus:ring-[#3ECF8E] rounded-md h-10 pl-10 pr-3 text-sm transition-colors outline-none"
                       placeholder="John Doe"
-                      required={!isLogin}
+                      required
                     />
                   </div>
                 </div>
               )}
 
-              <div>
-                <label className="block text-sm font-medium mb-2">
-                  Email
-                </label>
-                <div className="relative">
-                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                  <input
-                    data-testid="email-input"
-                    type="email"
-                    value={formData.email}
-                    onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                    className="w-full bg-[#121212] border border-[#2E2E2E] focus:border-[#3ECF8E] focus:ring-1 focus:ring-[#3ECF8E] rounded-md h-10 pl-10 pr-3 text-sm transition-colors outline-none"
-                    placeholder="you@example.com"
-                    required
-                  />
-                </div>
-              </div>
+              {!showOTPStep && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">
+                      Email
+                    </label>
+                    <div className="relative">
+                      <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                      <input
+                        data-testid="email-input"
+                        type="email"
+                        value={formData.email}
+                        onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                        className="w-full bg-[#121212] border border-[#2E2E2E] focus:border-[#3ECF8E] focus:ring-1 focus:ring-[#3ECF8E] rounded-md h-10 pl-10 pr-3 text-sm transition-colors outline-none"
+                        placeholder="you@example.com"
+                        required
+                      />
+                    </div>
+                  </div>
 
-              <div>
-                <label className="block text-sm font-medium mb-2">
-                  Password
-                </label>
-                <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                  <input
-                    data-testid="password-input"
-                    type="password"
-                    value={formData.password}
-                    onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                    className="w-full bg-[#121212] border border-[#2E2E2E] focus:border-[#3ECF8E] focus:ring-1 focus:ring-[#3ECF8E] rounded-md h-10 pl-10 pr-3 text-sm transition-colors outline-none"
-                    placeholder="••••••••"
-                    required
-                  />
+                  <div>
+                    <label className="block text-sm font-medium mb-2">
+                      Password
+                    </label>
+                    <div className="relative">
+                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                      <input
+                        data-testid="password-input"
+                        type="password"
+                        value={formData.password}
+                        onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                        className="w-full bg-[#121212] border border-[#2E2E2E] focus:border-[#3ECF8E] focus:ring-1 focus:ring-[#3ECF8E] rounded-md h-10 pl-10 pr-3 text-sm transition-colors outline-none"
+                        placeholder="••••••••"
+                        required
+                      />
+                    </div>
+                    {isLogin && (
+                      <div className="mt-2 text-right">
+                        <button
+                          type="button"
+                          onClick={handleForgotPassword}
+                          className="text-sm text-[#3ECF8E] hover:text-[#34B27B] transition-colors"
+                        >
+                          Forgot Password?
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {!isLogin && showOTPStep && (
+                <div>
+                  <label className="block text-sm font-medium mb-2">
+                    Verification Code
+                  </label>
+                  <p className="text-xs text-muted-foreground mb-3">
+                    Enter the 6-digit code sent to {formData.email}
+                  </p>
+                  <div className="relative">
+                    <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <input
+                      type="text"
+                      value={formData.otp}
+                      onChange={(e) => setFormData({ ...formData, otp: e.target.value })}
+                      className="w-full bg-[#121212] border border-[#2E2E2E] focus:border-[#3ECF8E] focus:ring-1 focus:ring-[#3ECF8E] rounded-md h-10 pl-10 pr-3 text-sm transition-colors outline-none text-center tracking-widest font-mono text-lg"
+                      placeholder="000000"
+                      maxLength={6}
+                      required
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleResendOTP}
+                    disabled={loading}
+                    className="text-sm text-[#3ECF8E] hover:text-[#34B27B] transition-colors mt-2"
+                  >
+                    Resend Code
+                  </button>
                 </div>
-              </div>
+              )}
 
               <button
                 data-testid="submit-button"
@@ -122,14 +221,31 @@ const LoginPage = () => {
                 disabled={loading}
                 className="w-full bg-[#3ECF8E] text-black hover:bg-[#34B27B] font-medium rounded-md h-10 shadow-[0_0_10px_rgba(62,207,142,0.2)] transition-all disabled:opacity-50"
               >
-                {loading ? 'Please wait...' : (isLogin ? 'Sign In' : 'Create Account')}
+                {loading ? 'Please wait...' : (
+                  isLogin ? 'Sign In' : (showOTPStep ? 'Verify & Create Account' : 'Send Verification Code')
+                )}
               </button>
             </form>
 
             <div className="mt-6 text-center">
+              {showOTPStep && (
+                <button
+                  onClick={() => {
+                    setShowOTPStep(false);
+                    setFormData({ ...formData, otp: '' });
+                  }}
+                  className="text-sm text-muted-foreground hover:text-white transition-colors mb-3 block"
+                >
+                  ← Change Email
+                </button>
+              )}
               <button
                 data-testid="toggle-mode-button"
-                onClick={() => setIsLogin(!isLogin)}
+                onClick={() => {
+                  setIsLogin(!isLogin);
+                  setShowOTPStep(false);
+                  setFormData({ email: '', password: '', full_name: '', otp: '' });
+                }}
                 className="text-sm text-muted-foreground hover:text-white transition-colors"
               >
                 {isLogin ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}

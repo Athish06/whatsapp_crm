@@ -27,13 +27,14 @@ app.add_middleware(
 )
 
 # Import and include routers
-from routes import auth, customers, templates, batches, dashboard
+from routes import auth, customers, templates, batches, dashboard, files
 
 app.include_router(auth.router, prefix="/api")
 app.include_router(customers.router, prefix="/api")
 app.include_router(templates.router, prefix="/api")
 app.include_router(batches.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
+app.include_router(files.router, prefix="/api")
 
 
 @app.get("/api/health")

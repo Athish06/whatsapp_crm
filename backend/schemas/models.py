@@ -48,6 +48,29 @@ class UserRegister(BaseModel):
     full_name: str
 
 
+class VerifyOTPRequest(BaseModel):
+    """OTP verification request."""
+    email: EmailStr
+    otp: str
+
+
+class SendOTPRequest(BaseModel):
+    """Request to send/resend OTP."""
+    email: EmailStr
+
+
+class ForgotPasswordRequest(BaseModel):
+    """Forgot password request."""
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    """Reset password with OTP."""
+    email: EmailStr
+    otp: str
+    new_password: str
+
+
 class TokenResponse(BaseModel):
     """JWT token response."""
     access_token: str
@@ -136,3 +159,37 @@ class DashboardStats(BaseModel):
     messages_failed: int
     active_batches: int
     templates_count: int
+
+
+# ============ File Upload Schemas ============
+
+class FileUploadResponse(BaseModel):
+    """File upload response."""
+    file_id: str
+    file_name: str
+    file_url: str
+    file_size: int
+    uploaded_at: datetime
+    user_id: str
+
+
+class FileMetadata(BaseModel):
+    """File metadata stored in database."""
+    id: Optional[str] = Field(alias="_id", default=None)
+    user_id: str
+    file_name: str
+    original_file_name: str
+    file_url: str
+    file_size: int
+    file_type: str
+    uploaded_at: datetime
+    b2_file_id: Optional[str] = None
+    
+    class Config:
+        populate_by_name = True
+
+
+class UserFilesResponse(BaseModel):
+    """User files list response."""
+    total_files: int
+    files: List[FileMetadata]
