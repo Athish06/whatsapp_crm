@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { dashboardAPI } from '../lib/api';
 import { Users, Send, AlertCircle, Activity, TrendingUp } from 'lucide-react';
 import { toast } from 'sonner';
+import { getErrorMessage } from '../lib/utils';
 
 const DashboardPage = () => {
   const [stats, setStats] = useState({
@@ -22,7 +23,7 @@ const DashboardPage = () => {
       const response = await dashboardAPI.getStats();
       setStats(response.data);
     } catch (error) {
-      toast.error('Failed to load dashboard stats');
+      toast.error(getErrorMessage(error, 'Failed to load dashboard stats'));
     } finally {
       setLoading(false);
     }

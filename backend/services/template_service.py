@@ -23,7 +23,8 @@ class TemplateService:
         self, 
         name: str, 
         content: str, 
-        user_id: str
+        user_id: str,
+        segment: str = "all"
     ) -> Dict[str, Any]:
         """Create a new message template."""
         placeholders = self.extract_placeholders(content)
@@ -33,6 +34,7 @@ class TemplateService:
             "user_id": user_id,
             "name": name,
             "content": content,
+            "segment": segment,
             "placeholders": placeholders,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }

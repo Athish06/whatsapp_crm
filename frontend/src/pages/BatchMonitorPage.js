@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { batchesAPI } from '../lib/api';
-import { Clock, CheckCircle, XCircle, Loader, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Clock, CheckCircle, XCircle, Loader, AlertTriangle, RefreshCw, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { getErrorMessage } from '../lib/utils';
 
 const BatchMonitorPage = () => {
   const [batches, setBatches] = useState([]);
@@ -19,7 +20,7 @@ const BatchMonitorPage = () => {
       const response = await batchesAPI.list();
       setBatches(response.data.batches);
     } catch (error) {
-      toast.error('Failed to load batches');
+      toast.error(getErrorMessage(error, 'Failed to load batches'));
     } finally {
       setLoading(false);
     }
@@ -32,9 +33,23 @@ const BatchMonitorPage = () => {
       toast.success('Batch rescheduled with priority');
       await loadBatches();
     } catch (error) {
-      toast.error('Failed to reschedule batch');
+      toast.error(getErrorMessage(error, 'Failed to reschedule batch'));
     } finally {
       setRescheduling(null);
+    }
+  };
+
+  const handleClearAll = async () => {
+    if (!window.confirm('Are you sure you want to clear ALL batches and messages? This action cannot be undone!')) {
+      return;
+    }
+    
+    try {
+      const response = await batchesAPI.clearAll();
+      toast.success(`Cleared ${response.data.batches_deleted} batches and ${response.data.messages_deleted} messages`);
+      await loadBatches();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Failed to clear batches'));
     }
   };
 
@@ -88,14 +103,25 @@ const BatchMonitorPage = () => {
             Track and manage your message batches in real-time
           </p>
         </div>
-        <button
-          data-testid="refresh-button"
-          onClick={loadBatches}
-          className="px-4 py-2 bg-[#2E2E2E] hover:bg-[#3E3E3E] rounded-md transition-colors flex items-center gap-2"
-        >
-          <RefreshCw className="w-4 h-4" />
-          Refresh
-        </button>
+        <div className="flex gap-3">
+          <button
+            data-testid="clear-all-button"
+            onClick={handleClearAll}
+            disabled={batches.length === 0}
+            className="px-4 py-2 bg-red-600/10 hover:bg-red-600/20 border border-red-600/30 text-red-400 rounded-md transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Trash2 className="w-4 h-4" />
+            Clear All
+          </button>
+          <button
+            data-testid="refresh-button"
+            onClick={loadBatches}
+            className="px-4 py-2 bg-[#2E2E2E] hover:bg-[#3E3E3E] rounded-md transition-colors flex items-center gap-2"
+          >
+            <RefreshCw className="w-4 h-4" />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Batches Table */}

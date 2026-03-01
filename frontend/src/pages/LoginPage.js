@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Lock, Mail, User, KeyRound } from 'lucide-react';
 import { authAPI } from '../lib/api';
+import { getErrorMessage } from '../lib/utils';
 
 const LoginPage = () => {
   const [isLogin, setIsLogin] = useState(true);
@@ -28,7 +29,7 @@ const LoginPage = () => {
       toast.success('Verification code sent to your email');
       setShowOTPStep(true);
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to send verification code');
+      toast.error(getErrorMessage(error, 'Failed to send verification code'));
     } finally {
       setLoading(false);
     }
@@ -47,7 +48,7 @@ const LoginPage = () => {
       toast.success('Registration successful');
       navigate('/dashboard');
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Verification failed');
+      toast.error(getErrorMessage(error, 'Verification failed'));
     } finally {
       setLoading(false);
     }
@@ -62,7 +63,7 @@ const LoginPage = () => {
       toast.success('Login successful');
       navigate('/dashboard');
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Authentication failed');
+      toast.error(getErrorMessage(error, 'Authentication failed'));
     } finally {
       setLoading(false);
     }

@@ -22,7 +22,8 @@ async def create_template(
     template = await service.create_template(
         template_data.name,
         template_data.content,
-        current_user["id"]
+        current_user["id"],
+        template_data.segment
     )
     return MessageTemplateResponse(**template)
 

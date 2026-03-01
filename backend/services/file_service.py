@@ -3,6 +3,7 @@ File upload service for Backblaze B2 cloud storage.
 Handles file uploads, URL generation, and MongoDB storage.
 """
 import logging
+import io
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from pathlib import Path
@@ -328,8 +329,33 @@ class FileUploadService:
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to retrieve file info: {str(e)}"
+            )    
+    async def download_file(self, file_path: str) -> bytes:
+        """
+        Download file content from Backblaze B2.
+        
+        Args:
+            file_path: Path to the file in B2 storage
+            
+        Returns:
+            File content as bytes
+        """
+        try:
+            # Download file from B2
+            downloaded_file = self.bucket.download_file_by_name(file_path)
+            
+            # Save to BytesIO buffer to get bytes
+            buffer = io.BytesIO()
+            downloaded_file.save_to(buffer)
+            buffer.seek(0)
+            
+            return buffer.read()
+        except Exception as e:
+            logger.error(f"Error downloading file from B2: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to download file: {str(e)}"
             )
-
 
 # Global instance
 file_service = FileUploadService()

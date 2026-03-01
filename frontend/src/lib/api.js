@@ -34,8 +34,21 @@ export const customersAPI = {
     formData.append('file', file);
     return api.post('/customers/upload', formData);
   },
+  detectColumns: (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post('/customers/detect-columns', formData);
+  },
+  uploadWithMapping: (file, columnMapping, percentile = 70) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('column_mapping', JSON.stringify(columnMapping));
+    formData.append('percentile', percentile.toString());
+    return api.post('/customers/upload-with-mapping', formData);
+  },
   list: () => api.get('/customers/list'),
   clear: () => api.delete('/customers/clear'),
+  getByFile: (fileId) => api.get(`/customers/by-file/${fileId}`),
 };
 
 // API endpoints for templates
@@ -55,4 +68,19 @@ export const batchesAPI = {
   list: () => api.get('/batches/list'),
   reschedule: (id) => api.post(`/batches/${id}/reschedule`),
   getMessages: (id) => api.get(`/batches/${id}/messages`),
+  clearAll: () => api.delete('/batches/clear-all'),
+};
+
+// API endpoints for files
+export const filesAPI = {
+  upload: (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post('/files/upload', formData);
+  },
+  getMyFiles: (skip = 0, limit = 50) => api.get('/files/my-files', {
+    params: { skip, limit }
+  }),
+  getFileInfo: (fileId) => api.get(`/files/file/${fileId}`),
+  deleteFile: (fileId) => api.delete(`/files/file/${fileId}`),
 };
