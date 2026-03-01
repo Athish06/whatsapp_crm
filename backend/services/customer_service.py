@@ -2,11 +2,15 @@
 Customer service for managing customer data.
 """
 from datetime import datetime, timezone
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from motor.motor_asyncio import AsyncIOMotorDatabase
 import uuid
 import pandas as pd
-from utils.classifier import parse_csv_file, classify_customers
+from utils.classifier import (
+    parse_csv_file,
+    classify_customers_dynamic,
+    detect_columns
+)
 
 
 class CustomerService:
@@ -15,28 +19,118 @@ class CustomerService:
     def __init__(self, db: AsyncIOMotorDatabase):
         self.db = db
     
+    async def detect_file_columns(
+        self,
+        file_content: bytes,
+        filename: str
+    ) -> Dict[str, Any]:
+        """
+        Detect columns in uploaded file and suggest mapping.
+        
+        Returns:
+            Dictionary with detected columns and suggested mappings
+        """
+        columns = detect_columns(file_content, filename)
+        
+        # Suggest mapping based on common patterns
+        suggested_mapping = self._suggest_column_mapping(columns)
+        
+        return {
+            "columns": columns,
+            "suggested_mapping": suggested_mapping
+        }
+    
+    def _suggest_column_mapping(self, columns: List[str]) -> Dict[str, Optional[str]]:
+        """
+        Suggest mapping for detected columns based on common patterns.
+        
+        Returns:
+            Dict mapping standard field names to suggested column names
+        """
+        columns_lower = [col.lower() for col in columns]
+        mapping = {
+            "name": None,
+            "phone": None,
+            "email": None,
+            "quantity": None,  # Frontend uses 'quantity'
+            "purchase_count": None,
+            "total_spent": None  # Frontend uses 'total_spent'
+        }
+        
+        # Name field suggestions
+        name_keywords = ['name', 'customer', 'client', 'full_name', 'customer_name']
+        for col, col_lower in zip(columns, columns_lower):
+            if any(kw in col_lower for kw in name_keywords) and not mapping["name"]:
+                mapping["name"] = col
+                break
+        
+        # Phone field suggestions
+        phone_keywords = ['phone', 'mobile', 'contact', 'tel', 'cell']
+        for col, col_lower in zip(columns, columns_lower):
+            if any(kw in col_lower for kw in phone_keywords) and not mapping["phone"]:
+                mapping["phone"] = col
+                break
+        
+        # Email field suggestions
+        email_keywords = ['email', 'mail', 'e-mail']
+        for col, col_lower in zip(columns, columns_lower):
+            if any(kw in col_lower for kw in email_keywords) and not mapping["email"]:
+                mapping["email"] = col
+                break
+        
+        # Quantity field suggestions (frontend uses 'quantity')
+        qty_keywords = ['quantity', 'qty', 'items', 'units', 'total_qty', 'total_quantity']
+        for col, col_lower in zip(columns, columns_lower):
+            if any(kw in col_lower for kw in qty_keywords) and not mapping["quantity"]:
+                mapping["quantity"] = col
+                break
+        
+        # Purchase count suggestions
+        count_keywords = ['orders', 'purchase', 'count', 'visits', 'transactions']
+        for col, col_lower in zip(columns, columns_lower):
+            if any(kw in col_lower for kw in count_keywords) and not mapping["purchase_count"]:
+                mapping["purchase_count"] = col
+                break
+        
+        # Total spent suggestions (frontend uses 'total_spent')
+        value_keywords = ['value', 'amount', 'total', 'revenue', 'spend', 'spent', 'price']
+        for col, col_lower in zip(columns, columns_lower):
+            if any(kw in col_lower for kw in value_keywords) and not mapping["total_spent"]:
+                mapping["total_spent"] = col
+                break
+        
+        return mapping
+    
     async def upload_customers(
         self, 
         file_content: bytes, 
         filename: str, 
         user_id: str,
         file_url: str = None,
-        file_id: str = None
+        file_id: str = None,
+        column_mapping: Optional[Dict[str, str]] = None,
+        percentile: int = 70
     ) -> Dict[str, Any]:
-        """Process and upload customers from CSV/Excel/PDF file.
+        """Process and upload customers from CSV/Excel/PDF file with dynamic segmentation.
         
         Args:
             file_content: Raw file bytes
             filename: Original filename
             user_id: User ID
-            file_url: URL of file in Backblaze B2 (optional, from file_service)
-            file_id: File ID in files collection (optional, from file_service)
+            file_url: URL of file in Backblaze B2 (optional)
+            file_id: File ID in files collection (optional)
+            column_mapping: User-provided column mapping (optional)
+            percentile: Percentile for dynamic thresholds (default 70)
         """
-        # Parse file
-        df = parse_csv_file(file_content, filename)
+        # Parse file with column mapping
+        df = parse_csv_file(file_content, filename, column_mapping)
         
-        # Classify customers
-        df, classifications = classify_customers(df)
+        # Classify customers using DYNAMIC thresholds
+        df, classifications, thresholds = classify_customers_dynamic(
+            df,
+            column_mapping=None,  # Already applied in parse_csv_file
+            percentile=percentile
+        )
         
         # Prepare customer documents with all available fields
         customers = []
@@ -52,9 +146,11 @@ class CustomerService:
                 "phone": str(customer_data.get('phone', '')).strip(),
                 "email": str(customer_data.get('email', '')).strip(),
                 "category": customer_data.get('category', 'regular'),
+                "segment": customer_data.get('segment', 'regular'),  # Add segment field
                 "total_quantity": float(customer_data.get('total_quantity', 0)),
                 "purchase_count": int(customer_data.get('purchase_count', 1)),
                 "order_value": float(customer_data.get('order_value', 0)),
+                "avg_items_per_order": float(customer_data.get('avg_items_per_order', 0)),
                 "uploaded_at": datetime.now(timezone.utc).isoformat(),
                 "source_file": filename,
             }
@@ -66,11 +162,10 @@ class CustomerService:
                 customer_doc["file_id"] = file_id
             
             # Add any additional custom fields from the uploaded file
-            # This allows flexibility for batch processing later
             additional_fields = {
                 k: v for k, v in customer_data.items() 
-                if k not in ['name', 'phone', 'email', 'category', 'total_quantity', 
-                           'purchase_count', 'order_value'] and pd.notna(v)
+                if k not in ['name', 'phone', 'email', 'category', 'segment', 'total_quantity', 
+                           'purchase_count', 'order_value', 'avg_items_per_order'] and pd.notna(v)
             }
             
             if additional_fields:
@@ -91,7 +186,8 @@ class CustomerService:
         return {
             "total_customers": len(customers_response),
             "classifications": classifications,
-            "customers": customers_response
+            "customers": customers_response,
+            "thresholds": thresholds
         }
     
     async def list_customers(self, user_id: str) -> Dict[str, Any]:
@@ -107,3 +203,37 @@ class CustomerService:
         """Delete all customers for a user."""
         result = await self.db.customers.delete_many({"user_id": user_id})
         return result.deleted_count
+    
+    async def get_customers_by_file(self, file_id: str, user_id: str) -> Dict[str, Any]:
+        """Get all customers associated with a specific file."""
+        # Query customers by file_id and user_id for security
+        customers = await self.db.customers.find(
+            {"file_id": file_id, "user_id": user_id},
+            {"_id": 0}
+        ).to_list(10000)
+        
+        if not customers:
+            return {
+                "total_customers": 0,
+                "classifications": {},
+                "customers": []
+            }
+        
+        # Calculate classifications
+        classifications = {
+            "bulk_buyer": 0,
+            "frequent_customer": 0,
+            "both": 0,
+            "regular": 0
+        }
+        
+        for customer in customers:
+            category = customer.get("category", "regular")
+            if category in classifications:
+                classifications[category] += 1
+        
+        return {
+            "total_customers": len(customers),
+            "classifications": classifications,
+            "customers": customers
+        }

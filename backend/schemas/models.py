@@ -79,11 +79,24 @@ class TokenResponse(BaseModel):
 
 # ============ Customer Schemas ============
 
+class ColumnDetectionResponse(BaseModel):
+    """Response for column detection."""
+    columns: List[str]
+    suggested_mapping: Dict[str, Optional[str]]
+
+
 class CustomerUploadResponse(BaseModel):
     """Response for customer CSV upload."""
     total_customers: int
     classifications: Dict[str, int]
     customers: List[Dict[str, Any]]
+    thresholds: Optional[Dict[str, Any]] = None
+
+
+class CustomerUploadWithMappingRequest(BaseModel):
+    """Request for uploading customers with column mapping."""
+    column_mapping: Dict[str, str]
+    percentile: Optional[int] = 70
 
 
 # ============ Template Schemas ============
@@ -92,6 +105,7 @@ class MessageTemplateCreate(BaseModel):
     """Create message template request."""
     name: str
     content: str
+    segment: Optional[str] = "all"  # "all", "both" (VIP), "bulk_buyer", "frequent_customer", "regular"
 
 
 class MessageTemplateResponse(BaseModel):
@@ -100,6 +114,7 @@ class MessageTemplateResponse(BaseModel):
     name: str
     content: str
     placeholders: List[str]
+    segment: str
     created_at: str
 
 
@@ -107,7 +122,10 @@ class MessageTemplateResponse(BaseModel):
 
 class BatchCreate(BaseModel):
     """Create batch campaign request."""
-    template_id: str
+    campaign_name: Optional[str] = None  # Campaign name for tracking
+    file_id: Optional[str] = None  # File ID for campaign tracking
+    template_id: Optional[str] = None  # For backwards compatibility (single template)
+    segment_templates: Optional[Dict[str, str]] = None  # For segment-based templates
     customer_ids: List[str]
     batch_size: int
     start_time: datetime

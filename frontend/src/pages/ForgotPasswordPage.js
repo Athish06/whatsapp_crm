@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Lock, ArrowLeft, KeyRound } from 'lucide-react';
 import { authAPI } from '../lib/api';
+import { getErrorMessage } from '../lib/utils';
 
 const ForgotPasswordPage = () => {
   const location = useLocation();
@@ -33,7 +34,7 @@ const ForgotPasswordPage = () => {
       toast.success('Reset code sent to your email');
       setOtpSent(true);
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to send reset code');
+      toast.error(getErrorMessage(error, 'Failed to send reset code'));
       navigate('/');
     } finally {
       setLoading(false);
@@ -60,7 +61,7 @@ const ForgotPasswordPage = () => {
       toast.success('Password reset successfully');
       navigate('/');
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to reset password');
+      toast.error(getErrorMessage(error, 'Failed to reset password'));
     } finally {
       setLoading(false);
     }

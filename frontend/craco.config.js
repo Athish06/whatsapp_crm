@@ -32,6 +32,10 @@ const webpackConfig = {
       return webpackConfig;
     },
   },
+  devServer: {
+    host: 'localhost',
+    port: 3000,
+  },
 };
 
 module.exports = webpackConfig;

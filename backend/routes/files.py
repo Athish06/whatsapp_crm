@@ -7,8 +7,9 @@ import logging
 
 from config import Database
 from middleware.auth import get_current_user
-from schemas.models import FileUploadResponse, UserFilesResponse
+from schemas.models import FileUploadResponse, UserFilesResponse, ColumnDetectionResponse
 from services.file_service import file_service
+from services.customer_service import CustomerService
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,51 @@ async def upload_file(
         raise HTTPException(
             status_code=500,
             detail="Failed to upload file"
+        )
+
+
+@router.get("/detect-columns/{file_id}", response_model=ColumnDetectionResponse)
+async def detect_file_columns(
+    file_id: str,
+    current_user: dict = Depends(get_current_user),
+    db=Depends(Database.get_database)
+):
+    """
+    Detect columns in an already uploaded file.
+    
+    - **file_id**: MongoDB file ID
+    - Returns detected columns and suggested mappings
+    - Only file owner can access
+    """
+    try:
+        from bson import ObjectId
+        
+        user_id = current_user["user_id"]
+        
+        # Get file metadata from database
+        file_doc = await db.files.find_one(
+            {"_id": ObjectId(file_id), "user_id": user_id}
+        )
+        
+        if not file_doc:
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        # Download file from B2 using the unique file_name (not file_path)
+        file_content = await file_service.download_file(file_doc["file_name"])
+        
+        # Detect columns
+        service = CustomerService(db)
+        result = await service.detect_file_columns(file_content, file_doc["original_file_name"])
+        
+        return ColumnDetectionResponse(**result)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error detecting columns: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to detect columns"
         )
 
 
