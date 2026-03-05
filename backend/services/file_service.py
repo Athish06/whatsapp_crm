@@ -4,6 +4,8 @@ Handles file uploads, URL generation, and MongoDB storage.
 """
 import logging
 import io
+import os
+import tempfile
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from pathlib import Path
@@ -340,22 +342,26 @@ class FileUploadService:
         Returns:
             File content as bytes
         """
+        tmp_path = None
         try:
-            # Download file from B2
+            # b2sdk v2 save_to() only accepts a file path string
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as tmp:
+                tmp_path = tmp.name
+
             downloaded_file = self.bucket.download_file_by_name(file_path)
-            
-            # Save to BytesIO buffer to get bytes
-            buffer = io.BytesIO()
-            downloaded_file.save_to(buffer)
-            buffer.seek(0)
-            
-            return buffer.read()
+            downloaded_file.save_to(tmp_path)
+
+            with open(tmp_path, 'rb') as f:
+                return f.read()
         except Exception as e:
             logger.error(f"Error downloading file from B2: {str(e)}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to download file: {str(e)}"
             )
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
 
 # Global instance
 file_service = FileUploadService()

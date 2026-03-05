@@ -77,18 +77,22 @@ async def detect_file_columns(
         from bson import ObjectId
         
         user_id = current_user["user_id"]
+        print(user_id, file_id)
         
         # Get file metadata from database
         file_doc = await db.files.find_one(
             {"_id": ObjectId(file_id), "user_id": user_id}
         )
-        
+        print(file_doc)
         if not file_doc:
             raise HTTPException(status_code=404, detail="File not found")
         
         # Download file from B2 using the unique file_name (not file_path)
         file_content = await file_service.download_file(file_doc["file_name"])
-        
+        if file_content:
+            print("success")
+        else:
+            print(await file_service.download_file(file_doc["file_name"]))
         # Detect columns
         service = CustomerService(db)
         result = await service.detect_file_columns(file_content, file_doc["original_file_name"])

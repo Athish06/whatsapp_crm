@@ -10,8 +10,59 @@ from services import CustomerService
 from services.file_service import file_service
 from middleware import get_current_user
 from config import get_db
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/customers", tags=["customers"])
+
+
+class ProcessFileRequest(BaseModel):
+    column_mapping: dict
+    percentile: Optional[int] = 70
+
+
+@router.post("/process-file/{file_id}", response_model=CustomerUploadResponse)
+async def process_uploaded_file(
+    file_id: str,
+    body: ProcessFileRequest,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+):
+    """
+    Process an already-uploaded B2 file by file_id with column mapping.
+    Downloads the file from B2, classifies customers, and stores results.
+    """
+    try:
+        from bson import ObjectId
+        user_id = current_user.get("user_id") or current_user.get("id")
+
+        # Fetch file metadata from DB
+        file_doc = await db.files.find_one(
+            {"_id": ObjectId(file_id), "user_id": user_id}
+        )
+        if not file_doc:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        # Download file content from B2
+        file_content = await file_service.download_file(file_doc["file_name"])
+
+        # Process customers
+        service = CustomerService(db)
+        result = await service.upload_customers(
+            file_content,
+            file_doc["original_file_name"],
+            user_id,
+            file_url=file_doc.get("file_url"),
+            file_id=str(file_doc["_id"]),
+            column_mapping=body.column_mapping,
+            percentile=body.percentile
+        )
+
+        return CustomerUploadResponse(**result)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process file: {str(e)}")
 
 
 @router.post("/detect-columns", response_model=ColumnDetectionResponse)

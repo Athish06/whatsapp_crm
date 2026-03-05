@@ -46,6 +46,7 @@ export const customersAPI = {
     formData.append('percentile', percentile.toString());
     return api.post('/customers/upload-with-mapping', formData);
   },
+  processWithMapping: (fileId, data) => api.post(`/customers/process-file/${fileId}`, data),
   list: () => api.get('/customers/list'),
   clear: () => api.delete('/customers/clear'),
   getByFile: (fileId) => api.get(`/customers/by-file/${fileId}`),
@@ -83,4 +84,5 @@ export const filesAPI = {
   }),
   getFileInfo: (fileId) => api.get(`/files/file/${fileId}`),
   deleteFile: (fileId) => api.delete(`/files/file/${fileId}`),
+  detectColumns: (fileId) => api.get(`/files/detect-columns/${fileId}`),
 };

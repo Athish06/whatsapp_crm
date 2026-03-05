@@ -102,9 +102,11 @@ const CampaignCreatorPage = () => {
 
       // Step 2: Detect columns for mapping
       const columnsResponse = await filesAPI.detectColumns(fileId);
-      const detectedCols = columnsResponse.data.detected_columns;
+      const detectedCols = columnsResponse.data.columns;
+      const suggestedMapping = columnsResponse.data.suggested_mapping || {};
       
       setDetectedColumns(detectedCols);
+      setColumnMapping(suggestedMapping);
       setUploadedFile({ file_id: fileId, file_name: uploadResponse.data.file_name });
       
       // Step 3: Show column mapping dialog
