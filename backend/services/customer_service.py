@@ -8,7 +8,7 @@ import uuid
 import pandas as pd
 from utils.classifier import (
     parse_csv_file,
-    classify_customers_dynamic,
+    classify_customers_rfm,
     detect_columns
 )
 
@@ -54,7 +54,8 @@ class CustomerService:
             "email": None,
             "quantity": None,  # Frontend uses 'quantity'
             "purchase_count": None,
-            "total_spent": None  # Frontend uses 'total_spent'
+            "total_spent": None,  # Frontend uses 'total_spent'
+            "last_transaction_date": None  # For RFM Recency
         }
         
         # Name field suggestions
@@ -99,6 +100,13 @@ class CustomerService:
                 mapping["total_spent"] = col
                 break
         
+        # Last transaction date suggestions (for RFM Recency)
+        date_keywords = ['date', 'last', 'recent', 'transaction', 'purchase_date', 'order_date', 'invoice_date']
+        for col, col_lower in zip(columns, columns_lower):
+            if any(kw in col_lower for kw in date_keywords) and not mapping["last_transaction_date"]:
+                mapping["last_transaction_date"] = col
+                break
+        
         return mapping
     
     async def upload_customers(
@@ -125,11 +133,10 @@ class CustomerService:
         # Parse file with column mapping
         df = parse_csv_file(file_content, filename, column_mapping)
         
-        # Classify customers using DYNAMIC thresholds
-        df, classifications, thresholds = classify_customers_dynamic(
+        # Classify customers using RFM segmentation
+        df, classifications, rfm_info = classify_customers_rfm(
             df,
-            column_mapping=None,  # Already applied in parse_csv_file
-            percentile=percentile
+            column_mapping=None  # Already applied in parse_csv_file
         )
         
         # Prepare customer documents with all available fields
@@ -155,6 +162,22 @@ class CustomerService:
                 "source_file": filename,
             }
             
+            # Add RFM scores if available
+            if 'rfm_score' in customer_data and pd.notna(customer_data['rfm_score']):
+                customer_doc['rfm_score'] = int(customer_data['rfm_score'])
+            if 'r_score' in customer_data and pd.notna(customer_data['r_score']):
+                customer_doc['r_score'] = int(customer_data['r_score'])
+            if 'f_score' in customer_data and pd.notna(customer_data['f_score']):
+                customer_doc['f_score'] = int(customer_data['f_score'])
+            if 'm_score' in customer_data and pd.notna(customer_data['m_score']):
+                customer_doc['m_score'] = int(customer_data['m_score'])
+            if 'recency' in customer_data and pd.notna(customer_data['recency']):
+                customer_doc['recency'] = float(customer_data['recency'])
+            if 'frequency' in customer_data and pd.notna(customer_data['frequency']):
+                customer_doc['frequency'] = int(customer_data['frequency'])
+            if 'monetary' in customer_data and pd.notna(customer_data['monetary']):
+                customer_doc['monetary'] = float(customer_data['monetary'])
+            
             # Add file reference if file was uploaded to cloud
             if file_url:
                 customer_doc["file_url"] = file_url
@@ -162,10 +185,15 @@ class CustomerService:
                 customer_doc["file_id"] = file_id
             
             # Add any additional custom fields from the uploaded file
+            excluded_fields = {
+                'name', 'phone', 'email', 'category', 'segment', 'total_quantity', 
+                'purchase_count', 'order_value', 'avg_items_per_order',
+                'rfm_score', 'r_score', 'f_score', 'm_score', 'recency', 'frequency', 'monetary',
+                'recency_log', 'frequency_log', 'monetary_log', 'recency_scaled', 'frequency_scaled', 'monetary_scaled'
+            }
             additional_fields = {
                 k: v for k, v in customer_data.items() 
-                if k not in ['name', 'phone', 'email', 'category', 'segment', 'total_quantity', 
-                           'purchase_count', 'order_value', 'avg_items_per_order'] and pd.notna(v)
+                if k not in excluded_fields and pd.notna(v)
             }
             
             if additional_fields:
@@ -187,7 +215,7 @@ class CustomerService:
             "total_customers": len(customers_response),
             "classifications": classifications,
             "customers": customers_response,
-            "thresholds": thresholds
+            "rfm_info": rfm_info
         }
     
     async def list_customers(self, user_id: str) -> Dict[str, Any]:

@@ -24,6 +24,8 @@ cryptography==46.0.3
 
 # Data Processing
 pandas==2.3.3
+numpy>=1.26.0
+scipy>=1.11.0
 openpyxl==3.1.5
 xlrd==2.0.2
 PyPDF2==3.0.1

@@ -90,7 +90,8 @@ class CustomerUploadResponse(BaseModel):
     total_customers: int
     classifications: Dict[str, int]
     customers: List[Dict[str, Any]]
-    thresholds: Optional[Dict[str, Any]] = None
+    rfm_info: Optional[Dict[str, Any]] = None
+    thresholds: Optional[Dict[str, Any]] = None  # Deprecated: kept for backwards compatibility
 
 
 class CustomerUploadWithMappingRequest(BaseModel):

@@ -19,11 +19,12 @@ const ColumnMappingDialog = ({
     { key: 'phone', label: 'Phone Number', description: 'Contact number (with country code)' },
   ];
 
-  // Optional fields
+  // Optional fields (for RFM segmentation)
   const optionalFields = [
-    { key: 'purchase_count', label: 'Purchase Count', description: 'Total number of purchases' },
-    { key: 'total_spent', label: 'Total Spent', description: 'Total amount spent' },
-    { key: 'quantity', label: 'Items per Order', description: 'Average items per order' },
+    { key: 'purchase_count', label: 'Purchase Count (Frequency)', description: 'Total number of purchases/orders - used for RFM Frequency score' },
+    { key: 'total_spent', label: 'Total Spent (Monetary)', description: 'Total amount spent - used for RFM Monetary score' },
+    { key: 'last_transaction_date', label: 'Last Transaction Date (Recency)', description: 'Date of last purchase (YYYY-MM-DD) - used for RFM Recency score' },
+    { key: 'quantity', label: 'Total Items Quantity', description: 'Total items ordered (optional)' },
     { key: 'email', label: 'Email', description: 'Email address (optional)' },
   ];
 
@@ -63,8 +64,8 @@ const ColumnMappingDialog = ({
           <Info className="h-5 w-5 text-[#3ECF8E] flex-shrink-0 mt-0.5" />
           <div>
             <p className="text-sm text-gray-300">
-              <strong className="text-white">How it works:</strong> Match your file's column names to our system fields.
-              Required fields must be mapped. The system will automatically segment customers based on behavior patterns.
+              <strong className="text-white">RFM Segmentation:</strong> Match your file's column names to our system fields.
+              Required fields are mandatory. Optional RFM fields (Recency, Frequency, Monetary) enable advanced AI-powered customer segmentation with log transformation and z-score scaling.
             </p>
           </div>
         </div>
@@ -109,39 +110,14 @@ const ColumnMappingDialog = ({
               </div>
             </div>
 
-            {/* Percentile Threshold */}
-            <div className="bg-[#2E2E2E] rounded-lg p-6 border border-[#3E3E3E]">
-              <h2 className="text-xl font-semibold mb-4">Segmentation Threshold</h2>
-              <div className="space-y-4">
-                <div className="flex justify-between items-center">
-                  <Label className="text-white font-medium">
-                    Percentile: {percentile}%
-                  </Label>
-                  <span className="text-[#3ECF8E] text-sm font-semibold">
-                    {percentile}th percentile
-                  </span>
-                </div>
+            {/* RFM Segmentation Threshold (Hidden/Deprecated) */}
+            <div className="bg-[#2E2E2E] rounded-lg p-6 border border-[#3E3E3E] opacity-50">
+              <h2 className="text-xl font-semibold mb-2">Segmentation Method</h2>
+              <div className="bg-gradient-to-r from-[#3ECF8E]/20 to-transparent rounded-lg p-4 border border-[#3ECF8E]/30">
+                <p className="text-sm text-[#3ECF8E] font-semibold mb-1">✨ Hybrid RFM Segmentation</p>
                 <p className="text-xs text-gray-400">
-                  Customers above the {percentile}th percentile will be classified as high-value segments (VIP, Frequent, Bulk).
+                  Uses Log Transformation + Z-Score Scaling + Quintile Scoring to automatically segment customers into 4 tiers (VIP, Loyal, Potential, At-Risk) based on Recency, Frequency, and Monetary values.
                 </p>
-                <div className="space-y-2">
-                  <input
-                    type="range"
-                    min="50"
-                    max="95"
-                    step="5"
-                    value={percentile}
-                    onChange={(e) => onPercentileChange(parseInt(e.target.value))}
-                    className="w-full h-2 bg-[#1A1A1A] rounded-lg appearance-none cursor-pointer"
-                    style={{
-                      background: `linear-gradient(to right, #3ECF8E 0%, #3ECF8E ${((percentile - 50) / 45) * 100}%, #1A1A1A ${((percentile - 50) / 45) * 100}%, #1A1A1A 100%)`
-                    }}
-                  />
-                  <div className="flex justify-between text-xs text-gray-500">
-                    <span>50% (Lower)</span>
-                    <span>95% (Higher)</span>
-                  </div>
-                </div>
               </div>
             </div>
           </div>
@@ -180,25 +156,38 @@ const ColumnMappingDialog = ({
               </div>
             </div>
 
-            {/* Segmentation Info */}
+            {/* RFM Segmentation Info */}
             <div className="bg-gradient-to-br from-[#3ECF8E]/10 to-[#2E2E3E] rounded-lg p-6 border border-[#3ECF8E]/30">
-              <h3 className="text-lg font-semibold mb-3 text-[#3ECF8E]">Customer Segments</h3>
-              <div className="space-y-2 text-sm">
-                <div className="flex items-start gap-2">
-                  <span className="text-[#3ECF8E] font-bold">•</span>
-                  <span><strong className="text-white">VIP:</strong> <span className="text-gray-300">High purchase frequency + High bulk orders</span></span>
+              <h3 className="text-lg font-semibold mb-3 text-[#3ECF8E]">RFM Customer Segments</h3>
+              <p className="text-xs text-gray-400 mb-4">AI-powered segmentation based on RFM scores (3-15 range)</p>
+              <div className="space-y-3 text-sm">
+                <div className="flex items-start gap-3 p-2 bg-[#3ECF8E]/10 rounded-lg">
+                  <span className="text-[#3ECF8E] font-bold text-lg">★</span>
+                  <div>
+                    <span className="block"><strong className="text-[#3ECF8E]">VIP Champions (12-15):</strong></span>
+                    <span className="text-gray-300 text-xs">High recency + frequency + monetary - Top tier customers</span>
+                  </div>
                 </div>
-                <div className="flex items-start gap-2">
-                  <span className="text-blue-400 font-bold">•</span>
-                  <span><strong className="text-white">Frequent Customers:</strong> <span className="text-gray-300">High purchase frequency</span></span>
+                <div className="flex items-start gap-3 p-2 bg-blue-500/10 rounded-lg">
+                  <span className="text-blue-400 font-bold text-lg">◆</span>
+                  <div>
+                    <span className="block"><strong className="text-blue-400">Loyal Customers (8-11):</strong></span>
+                    <span className="text-gray-300 text-xs">Frequent buyers with good engagement</span>
+                  </div>
                 </div>
-                <div className="flex items-start gap-2">
-                  <span className="text-purple-400 font-bold">•</span>
-                  <span><strong className="text-white">Bulk Buyers:</strong> <span className="text-gray-300">High quantity per order</span></span>
+                <div className="flex items-start gap-3 p-2 bg-purple-500/10 rounded-lg">
+                  <span className="text-purple-400 font-bold text-lg">▲</span>
+                  <div>
+                    <span className="block"><strong className="text-purple-400">Potential Growth (5-7):</strong></span>
+                    <span className="text-gray-300 text-xs">Developing customers with growth potential</span>
+                  </div>
                 </div>
-                <div className="flex items-start gap-2">
-                  <span className="text-gray-400 font-bold">•</span>
-                  <span><strong className="text-white">Regular:</strong> <span className="text-gray-300">Standard customers</span></span>
+                <div className="flex items-start gap-3 p-2 bg-gray-500/10 rounded-lg">
+                  <span className="text-gray-400 font-bold text-lg">○</span>
+                  <div>
+                    <span className="block"><strong className="text-gray-300">At-Risk Regular (3-4):</strong></span>
+                    <span className="text-gray-400 text-xs">Re-engagement recommended</span>
+                  </div>
                 </div>
               </div>
             </div>

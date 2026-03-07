@@ -4,6 +4,7 @@ from typing import Dict, List, Any, Optional
 from schemas import CustomerCategory
 import io
 import re
+from scipy import stats
 
 try:
     import PyPDF2
@@ -39,116 +40,173 @@ def detect_columns(file_content: bytes, filename: str) -> List[str]:
         raise ValueError(f"Failed to detect columns: {str(e)}")
 
 
+def classify_customers_rfm(
+    df: pd.DataFrame,
+    column_mapping: Optional[Dict[str, str]] = None,
+    today: Optional[pd.Timestamp] = None
+) -> tuple[pd.DataFrame, Dict[str, int], Dict[str, Any]]:
+    """
+    Hybrid RFM Segmentation with Log Transform + Z-Score + Quintile Scoring.
+    
+    Args:
+        df: DataFrame with customer data
+        column_mapping: Map of standard names to actual column names
+        today: Reference date for recency calculation (defaults to today)
+    
+    RFM Logic:
+        1. Calculate R (recency in days), F (frequency), M (monetary)
+        2. Log transform: log(x+1) to handle outliers
+        3. Z-score scaling: standardize to mean=0
+        4. Quintile scoring: divide into 5 groups, score 1-5
+        5. Total RFM Score = R_Score + F_Score + M_Score (3-15)
+        6. Segment mapping:
+           - 12-15: Both (VIP/Champion)
+           - 8-11: Frequent/Loyal
+           - 5-7: Bulk/Potential
+           - 3-4: Regular/At-Risk
+    """
+    # Apply column mapping if provided
+    if column_mapping:
+        df = df.rename(columns={v: k for k, v in column_mapping.items() if v in df.columns})
+    
+    # Handle field name variations
+    if 'quantity' in df.columns and 'total_quantity' not in df.columns:
+        df['total_quantity'] = df['quantity']
+    if 'total_spent' in df.columns and 'order_value' not in df.columns:
+        df['order_value'] = df['total_spent']
+    
+    # Ensure required columns exist with defaults
+    if 'purchase_count' not in df.columns:
+        df['purchase_count'] = 1
+    if 'order_value' not in df.columns:
+        df['order_value'] = 0
+    if 'last_transaction_date' not in df.columns:
+        df['last_transaction_date'] = pd.Timestamp.now()
+    
+    # Convert to numeric types
+    df['purchase_count'] = pd.to_numeric(df['purchase_count'], errors='coerce').fillna(1).replace(0, 1)
+    df['order_value'] = pd.to_numeric(df['order_value'], errors='coerce').fillna(0)
+    
+    # Parse last transaction date
+    if today is None:
+        today = pd.Timestamp.now()
+    
+    df['last_transaction_date'] = pd.to_datetime(df['last_transaction_date'], errors='coerce')
+    df['last_transaction_date'] = df['last_transaction_date'].fillna(today)
+    
+    # ==== STEP 1: Calculate RFM Metrics ====
+    df['recency'] = (today - df['last_transaction_date']).dt.days
+    df['recency'] = df['recency'].clip(lower=0)  # Ensure non-negative
+    df['frequency'] = df['purchase_count']
+    df['monetary'] = df['order_value']
+    
+    # ==== STEP 2: Log Transform + Z-Score Scaling ====
+    # Log transform to handle outliers
+    df['recency_log'] = np.log1p(df['recency'])  # log(x+1)
+    df['frequency_log'] = np.log1p(df['frequency'])
+    df['monetary_log'] = np.log1p(df['monetary'])
+    
+    # Z-score normalization (mean=0, std=1) - handle edge cases
+    try:
+        df['recency_scaled'] = stats.zscore(df['recency_log'])
+        df['frequency_scaled'] = stats.zscore(df['frequency_log'])
+        df['monetary_scaled'] = stats.zscore(df['monetary_log'])
+    except:
+        # If std is 0 (all values same), use 0
+        df['recency_scaled'] = 0
+        df['frequency_scaled'] = 0
+        df['monetary_scaled'] = 0
+    
+    # ==== STEP 3: Quintile Scoring (1-5) ====
+    # For Recency: LOWER is BETTER (recent customers score higher)
+    try:
+        df['r_score'] = pd.qcut(df['recency'], q=5, labels=[5, 4, 3, 2, 1], duplicates='drop')
+        df['r_score'] = df['r_score'].astype(int)
+    except (ValueError, TypeError):
+        # Fallback: use percentile-based scoring for small/uniform datasets
+        df['r_score'] = pd.cut(df['recency'], bins=5, labels=[5, 4, 3, 2, 1], duplicates='drop', include_lowest=True)
+        if df['r_score'].isna().all():
+            df['r_score'] = 3  # Default mid-range score
+        else:
+            df['r_score'] = df['r_score'].fillna(3).astype(int)
+    
+    # For Frequency: HIGHER is BETTER
+    try:
+        df['f_score'] = pd.qcut(df['frequency'], q=5, labels=[1, 2, 3, 4, 5], duplicates='drop')
+        df['f_score'] = df['f_score'].astype(int)
+    except (ValueError, TypeError):
+        df['f_score'] = pd.cut(df['frequency'], bins=5, labels=[1, 2, 3, 4, 5], duplicates='drop', include_lowest=True)
+        if df['f_score'].isna().all():
+            df['f_score'] = 3
+        else:
+            df['f_score'] = df['f_score'].fillna(3).astype(int)
+    
+    # For Monetary: HIGHER is BETTER
+    try:
+        df['m_score'] = pd.qcut(df['monetary'], q=5, labels=[1, 2, 3, 4, 5], duplicates='drop')
+        df['m_score'] = df['m_score'].astype(int)
+    except (ValueError, TypeError):
+        df['m_score'] = pd.cut(df['monetary'], bins=5, labels=[1, 2, 3, 4, 5], duplicates='drop', include_lowest=True)
+        if df['m_score'].isna().all():
+            df['m_score'] = 3
+        else:
+            df['m_score'] = df['m_score'].fillna(3).astype(int)
+    
+    # ==== STEP 4: Calculate Total RFM Score ====
+    df['rfm_score'] = df['r_score'] + df['f_score'] + df['m_score']
+    
+    # ==== STEP 5: Segment Mapping ====
+    def map_segment(score):
+        if 12 <= score <= 15:
+            return CustomerCategory.BOTH.value  # VIP/Champion
+        elif 8 <= score <= 11:
+            return CustomerCategory.FREQUENT_CUSTOMER.value  # Frequent/Loyal
+        elif 5 <= score <= 7:
+            return CustomerCategory.BULK_BUYER.value  # Bulk/Potential
+        else:  # 3-4
+            return CustomerCategory.REGULAR.value  # Regular/At-Risk
+    
+    df['category'] = df['rfm_score'].apply(map_segment)
+    df['segment'] = df['category']
+    
+    # Calculate classification counts
+    classifications = df['category'].value_counts().to_dict()
+    
+    # Calculate metrics for transparency
+    rfm_info = {
+        'method': 'Hybrid RFM (Log + Z-Score + Quintile)',
+        'recency_mean': float(df['recency'].mean()),
+        'frequency_mean': float(df['frequency'].mean()),
+        'monetary_mean': float(df['monetary'].mean()),
+        'rfm_score_distribution': {
+            '12-15 (VIP)': int((df['rfm_score'] >= 12).sum()),
+            '8-11 (Loyal)': int(((df['rfm_score'] >= 8) & (df['rfm_score'] < 12)).sum()),
+            '5-7 (Potential)': int(((df['rfm_score'] >= 5) & (df['rfm_score'] < 8)).sum()),
+            '3-4 (At-Risk)': int((df['rfm_score'] < 5).sum())
+        }
+    }
+    
+    return df, classifications, rfm_info
+
+
 def classify_customers_dynamic(
     df: pd.DataFrame,
     column_mapping: Optional[Dict[str, str]] = None,
     percentile: int = 70
 ) -> tuple[pd.DataFrame, Dict[str, int], Dict[str, Any]]:
     """
-    Classify customers based on DYNAMIC thresholds using percentiles.
-    
-    Args:
-        df: DataFrame with customer data
-        column_mapping: Map of standard names to actual column names
-            e.g., {"name": "Customer_Name", "phone": "Mobile_No"}
-        percentile: Percentile to use for threshold (default 70)
-    
-    Logic:
-        - Calculate 70th percentile for purchase_count and total_quantity
-        - High Frequency = purchase_count >= percentile threshold
-        - High Bulk = total_quantity >= percentile threshold
-        - Segmentation:
-            * High Frequency + High Bulk = "both" (VIP)
-            * High Frequency only = "frequent_customer"
-            * High Bulk only = "bulk_buyer"
-            * Low both = "regular"
+    DEPRECATED: Use classify_customers_rfm instead.
+    Kept for backward compatibility.
     """
-    # Apply column mapping if provided
-    if column_mapping:
-        df = df.rename(columns={v: k for k, v in column_mapping.items() if v in df.columns})
-    
-    # Handle field name variations (frontend uses different names)
-    # quantity -> total_quantity
-    if 'quantity' in df.columns and 'total_quantity' not in df.columns:
-        df['total_quantity'] = df['quantity']
-    
-    # total_spent -> order_value
-    if 'total_spent' in df.columns and 'order_value' not in df.columns:
-        df['order_value'] = df['total_spent']
-    
-    # Ensure required columns exist with defaults
-    if 'total_quantity' not in df.columns:
-        df['total_quantity'] = 0
-    
-    if 'purchase_count' not in df.columns:
-        df['purchase_count'] = 1
-    
-    if 'order_value' not in df.columns:
-        df['order_value'] = 0
-    
-    # CRITICAL: Convert to numeric types to avoid string division errors
-    df['total_quantity'] = pd.to_numeric(df['total_quantity'], errors='coerce').fillna(0)
-    df['purchase_count'] = pd.to_numeric(df['purchase_count'], errors='coerce').fillna(1)
-    df['order_value'] = pd.to_numeric(df['order_value'], errors='coerce').fillna(0)
-    
-    # Ensure purchase_count is at least 1 to avoid division by zero
-    df['purchase_count'] = df['purchase_count'].replace(0, 1)
-    
-    # Calculate average items per order (for bulk detection)
-    df['avg_items_per_order'] = df['total_quantity'] / df['purchase_count']
-    
-    # Calculate DYNAMIC thresholds based on percentiles
-    freq_threshold = np.percentile(df['purchase_count'].dropna(), percentile)
-    bulk_threshold = np.percentile(df['avg_items_per_order'].dropna(), percentile)
-    
-    # Alternative: Use total_quantity if avg_items_per_order is not meaningful
-    if df['avg_items_per_order'].max() < 2:  # If data doesn't have meaningful order splits
-        bulk_threshold = np.percentile(df['total_quantity'].dropna(), percentile)
-        use_total_qty = True
-    else:
-        use_total_qty = False
-    
-    # Classification logic with dynamic thresholds
-    def classify_row(row):
-        is_frequent = row.get('purchase_count', 0) >= freq_threshold
-        
-        if use_total_qty:
-            is_bulk = row.get('total_quantity', 0) >= bulk_threshold
-        else:
-            is_bulk = row.get('avg_items_per_order', 0) >= bulk_threshold
-        
-        if is_frequent and is_bulk:
-            return CustomerCategory.BOTH.value
-        elif is_frequent:
-            return CustomerCategory.FREQUENT_CUSTOMER.value
-        elif is_bulk:
-            return CustomerCategory.BULK_BUYER.value
-        else:
-            return CustomerCategory.REGULAR.value
-    
-    df['category'] = df.apply(classify_row, axis=1)
-    df['segment'] = df['category']  # Add segment column for consistency
-    
-    # Calculate classification counts
-    classifications = df['category'].value_counts().to_dict()
-    
-    # Add threshold info for transparency
-    thresholds = {
-        'frequency_threshold': float(freq_threshold),
-        'bulk_threshold': float(bulk_threshold),
-        'metric_used': 'total_quantity' if use_total_qty else 'avg_items_per_order',
-        'percentile': percentile
-    }
-    
-    return df, classifications, thresholds
+    return classify_customers_rfm(df, column_mapping)
 
 
 def classify_customers(df: pd.DataFrame) -> tuple[pd.DataFrame, Dict[str, int]]:
     """
-    Backward-compatible classification function using fixed thresholds.
-    For new implementations, use classify_customers_dynamic().
+    DEPRECATED: Backward-compatible classification function.
+    Use classify_customers_rfm for new implementations.
     """
-    df_result, classifications, _ = classify_customers_dynamic(df, None, 70)
+    df_result, classifications, _ = classify_customers_rfm(df, None)
     return df_result, classifications
 
 
