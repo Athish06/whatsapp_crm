@@ -28,9 +28,18 @@ class BatchStatus(str, Enum):
 class MessageStatus(str, Enum):
     """Individual message status."""
     PENDING = "pending"
+    PROCESSING = "processing"
     SENT = "sent"
     DELIVERED = "delivered"
     FAILED = "failed"
+
+
+class MessagePriority(int, Enum):
+    """Message priority levels."""
+    VIP = 1           # VIP Champions (RFM 12-15)
+    LOYAL = 2         # Loyal Customers (RFM 8-11)
+    POTENTIAL = 3     # Potential Growth (RFM 5-7)
+    REGULAR = 4       # At-Risk Regular (RFM 3-4)
 
 
 # ============ Auth Schemas ============
@@ -90,7 +99,8 @@ class CustomerUploadResponse(BaseModel):
     total_customers: int
     classifications: Dict[str, int]
     customers: List[Dict[str, Any]]
-    thresholds: Optional[Dict[str, Any]] = None
+    rfm_info: Optional[Dict[str, Any]] = None
+    thresholds: Optional[Dict[str, Any]] = None  # Deprecated: kept for backwards compatibility
 
 
 class CustomerUploadWithMappingRequest(BaseModel):
@@ -188,6 +198,63 @@ class FileUploadResponse(BaseModel):
     file_url: str
     file_size: int
     uploaded_at: datetime
+    duplicate: Optional[bool] = False  # Flag for duplicate file detection
+
+
+# ============ Campaign Batch Schemas (New) ============
+
+class CampaignBatchCreate(BaseModel):
+    """Create campaign batch request."""
+    campaign_name: str
+    file_id: Optional[str] = None
+    segment_templates: Dict[str, str]  # segment -> template_id mapping
+    total_customers: int
+    segment_breakdown: Dict[str, int]  # segment -> count
+
+
+class CampaignBatchResponse(BaseModel):
+    """Campaign batch response."""
+    id: str
+    user_id: str
+    campaign_name: str
+    total_customers: int
+    segment_breakdown: Dict[str, int]
+    created_at: datetime
+    status: BatchStatus
+
+
+# ============ Message Queue Schemas (New) ============
+
+class MessageQueueCreate(BaseModel):
+    """Create message in queue."""
+    batch_id: str
+    customer_id: str
+    phone: str
+    message_body: str
+    scheduled_at: datetime
+    priority: int  # 1-4 based on RFM segment
+
+
+class MessageQueueResponse(BaseModel):
+    """Message queue item response."""
+    id: str
+    user_id: str
+    batch_id: str
+    customer_id: str
+    phone: str
+    message_body: str
+    scheduled_at: datetime
+    status: MessageStatus
+    priority: int
+    retry_count: int
+    error_log: Optional[str] = None
+    processed_at: Optional[datetime] = None
+
+
+class ProcessFileRequest(BaseModel):
+    """Request to process uploaded file with column mapping."""
+    column_mapping: Dict[str, str]
+    percentile: Optional[int] = 70
     user_id: str
 
 

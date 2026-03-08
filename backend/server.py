@@ -17,6 +17,9 @@ from config import Database, settings
 # Create FastAPI app
 app = FastAPI(title="WhatsApp CRM API")
 
+# Global scheduler instance
+message_scheduler = None
+
 # CORS
 app.add_middleware(
     CORSMiddleware,
@@ -45,12 +48,25 @@ async def health_check():
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database connection on startup."""
+    """Initialize database connection and start scheduler on startup."""
+    global message_scheduler
+    
     try:
         # Verify database connection
         db = Database.get_database()
         await db.command("ping")
         logger.info("Connected to MongoDB successfully")
+        
+        # Initialize database indexes
+        await Database.initialize_indexes()
+        logger.info("Database indexes initialized")
+        
+        # Initialize and start message queue scheduler
+        from services.scheduler_service import MessageQueueScheduler
+        message_scheduler = MessageQueueScheduler(db)
+        message_scheduler.start()
+        logger.info("Message queue scheduler started")
+        
     except Exception as e:
         logger.warning(f"Could not connect to MongoDB: {e}")
         logger.warning("App starting without database connection. Ensure MongoDB is running.")
@@ -58,7 +74,15 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Close database connection on shutdown."""
+    """Close database connection and stop scheduler on shutdown."""
+    global message_scheduler
+    
+    # Stop scheduler
+    if message_scheduler:
+        message_scheduler.stop()
+        logger.info("Message queue scheduler stopped")
+    
+    # Close database connection
     await Database.close()
     logger.info("Disconnected from MongoDB")
 

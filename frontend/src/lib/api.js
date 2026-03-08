@@ -70,6 +70,7 @@ export const batchesAPI = {
   reschedule: (id) => api.post(`/batches/${id}/reschedule`),
   getMessages: (id) => api.get(`/batches/${id}/messages`),
   clearAll: () => api.delete('/batches/clear-all'),
+  getQueueStats: () => api.get('/batches/queue/stats'),
 };
 
 // API endpoints for files
