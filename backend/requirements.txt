@@ -36,6 +36,9 @@ tabula-py==2.9.0
 python-dotenv==1.2.1
 typing_extensions==4.15.0
 
+# Scheduling
+APScheduler==3.10.4
+
 # Cloud Storage
 b2sdk==2.5.0
 

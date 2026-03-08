@@ -6,11 +6,14 @@ from typing import List, Dict, Any, Optional
 from motor.motor_asyncio import AsyncIOMotorDatabase
 import uuid
 import pandas as pd
+import logging
 from utils.classifier import (
     parse_csv_file,
     classify_customers_rfm,
     detect_columns
 )
+
+logger = logging.getLogger(__name__)
 
 
 class CustomerService:
@@ -201,9 +204,24 @@ class CustomerService:
             
             customers.append(customer_doc)
         
-        # Insert into database
+        # Insert/Update customers in database (upsert to prevent duplicates)
         if customers:
-            await self.db.customers.insert_many(customers)
+            from pymongo import UpdateOne
+            
+            # Use bulk write with upsert to handle duplicates
+            operations = []
+            for customer in customers:
+                operations.append(
+                    UpdateOne(
+                        {"user_id": customer["user_id"], "phone": customer["phone"]},  # Match by user + phone
+                        {"$set": customer},  # Update all fields
+                        upsert=True  # Insert if not exists
+                    )
+                )
+            
+            if operations:
+                result = await self.db.customers.bulk_write(operations, ordered=False)
+                logger.info(f"Upserted {result.upserted_count} new customers, modified {result.modified_count} existing")
         
         # Remove _id field added by MongoDB to avoid serialization issues
         customers_response = []

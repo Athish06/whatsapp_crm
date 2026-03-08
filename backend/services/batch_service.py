@@ -170,6 +170,17 @@ class BatchService:
                     customer_template_id = template_id
                 
                 message_content = prepare_message(customer_template["content"], customer)
+                
+                # Map segment to priority (1=VIP, 2=Loyal, 3=Potential, 4=Regular)
+                segment_priority_map = {
+                    "vip": 1,
+                    "loyal": 2,
+                    "potential": 3,
+                    "regular": 4
+                }
+                customer_segment = customer.get("segment", "regular").lower()
+                message_priority = segment_priority_map.get(customer_segment, 4)
+                
                 message_doc = {
                     "id": str(uuid.uuid4()),
                     "batch_id": batch_id,
@@ -180,6 +191,11 @@ class BatchService:
                     "template_id": customer_template_id,
                     "message_content": message_content,
                     "status": MessageStatus.PENDING.value,
+                    "priority": message_priority,
+                    "scheduled_at": start_time,
+                    "retry_count": 0,
+                    "error_log": [],
+                    "processed_at": None,
                     "user_id": user_id,
                     "created_at": datetime.now(timezone.utc).isoformat(),
                 }
