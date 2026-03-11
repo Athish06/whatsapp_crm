@@ -190,3 +190,20 @@ async def get_campaign_details(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/queue/stats")
+async def get_queue_stats(
+    current_user: dict = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+):
+    """Get message queue statistics."""
+    try:
+        from services.scheduler_service import MessageQueueScheduler
+        
+        scheduler = MessageQueueScheduler(db)
+        stats = await scheduler.get_queue_stats()
+        
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

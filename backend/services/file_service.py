@@ -130,6 +130,25 @@ class FileUploadService:
             
             logger.info(f"Uploading file: {file.filename} ({file_size} bytes) for user {user_id}")
             
+            # Check for duplicate file upload
+            existing_file = await db.files.find_one({
+                "user_id": user_id,
+                "original_file_name": file.filename,
+                "file_size": file_size
+            })
+            
+            if existing_file:
+                logger.warning(f"Duplicate file detected: {file.filename} already uploaded by user {user_id}")
+                return {
+                    "file_id": str(existing_file["_id"]),
+                    "file_name": existing_file["original_file_name"],
+                    "file_url": existing_file["file_url"],
+                    "file_size": existing_file["file_size"],
+                    "uploaded_at": existing_file["uploaded_at"],
+                    "user_id": user_id,
+                    "duplicate": True  # Flag to notify frontend
+                }
+            
             # Upload to Backblaze B2
             file_info = self.bucket.upload_bytes(
                 data_bytes=file_content,
@@ -271,6 +290,14 @@ class FileUploadService:
                 except Exception as e:
                     logger.warning(f"Could not delete file from B2: {str(e)}")
             
+            # Delete associated customer data
+            customers_deleted = await db.customers.delete_many({
+                "user_id": user_id,
+                "source_file": file_doc["original_file_name"]
+            })
+            
+            logger.info(f"Deleted {customers_deleted.deleted_count} customers associated with file: {file_doc['original_file_name']}")
+            
             # Delete from MongoDB
             await db.files.delete_one({"_id": ObjectId(file_id)})
             
@@ -278,7 +305,8 @@ class FileUploadService:
             
             return {
                 "message": "File deleted successfully",
-                "file_id": file_id
+                "file_id": file_id,
+                "customers_deleted": customers_deleted.deleted_count
             }
             
         except HTTPException:

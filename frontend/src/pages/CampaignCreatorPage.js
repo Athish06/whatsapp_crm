@@ -36,7 +36,7 @@ const CampaignCreatorPage = () => {
   });
   
   const [batchConfig, setBatchConfig] = useState({
-    batch_size: 100,
+    batch_size: 50,  // WhatsApp limit-friendly batch size
     start_time: ''
   });
   const [estimate, setEstimate] = useState(null);
@@ -97,6 +97,27 @@ const CampaignCreatorPage = () => {
       // Step 1: Upload to B2 and get file metadata
       const uploadResponse = await filesAPI.upload(file);
       const fileId = uploadResponse.data.file_id;
+      
+      // Check if file is duplicate
+      if (uploadResponse.data.duplicate) {
+        setUploading(false);
+        
+        // Show confirmation dialog
+        const userChoice = window.confirm(
+          `This file "${uploadResponse.data.file_name}" has already been uploaded.\n\n` +
+          `Choose:\n` +
+          `- OK: Continue with the existing file and create new campaign\n` +
+          `- Cancel: Upload a different file`
+        );
+        
+        if (!userChoice) {
+          toast.info('Please upload a different file');
+          return;
+        }
+        
+        // User chose to continue with existing file
+        toast.info('Using existing file for campaign');
+      }
       
       toast.success('File uploaded successfully!');
 
@@ -201,7 +222,7 @@ const CampaignCreatorPage = () => {
     event.stopPropagation();
     
     // Confirmation dialog
-    if (!window.confirm(`Are you sure you want to delete "${fileName}"?\n\nThis will remove the file from cloud storage. Customer data will remain in the database.`)) {
+    if (!window.confirm(`Are you sure you want to delete "${fileName}"?\n\nWARNING: This will permanently delete:\n- The file from cloud storage\n- All customer data imported from this file\n\nThis action cannot be undone.`)) {
       return;
     }
     

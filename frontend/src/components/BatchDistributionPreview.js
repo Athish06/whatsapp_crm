@@ -8,12 +8,12 @@ const BatchDistributionPreview = ({ classifications, batchSize }) => {
       return [];
     }
 
-    // Priority order: VIPs (both) → Frequent → Bulk → Regular
+    // Priority order: VIPs (Champions) → Loyal → Potential → At-Risk
     const segments = [
-      { type: 'both', count: classifications.both || 0, label: 'VIP Customers', icon: Crown, color: 'text-emerald-400' },
-      { type: 'frequent_customer', count: classifications.frequent_customer || 0, label: 'Frequent Customers', icon: Zap, color: 'text-blue-400' },
-      { type: 'bulk_buyer', count: classifications.bulk_buyer || 0, label: 'Bulk Buyers', icon: Package, color: 'text-purple-400' },
-      { type: 'regular', count: classifications.regular || 0, label: 'Regular Customers', icon: User, color: 'text-slate-400' }
+      { type: 'both', count: classifications.both || 0, label: 'VIP Champions', icon: Crown, color: 'text-emerald-400', description: 'RFM 12-15' },
+      { type: 'frequent_customer', count: classifications.frequent_customer || 0, label: 'Loyal Customers', icon: Zap, color: 'text-blue-400', description: 'RFM 8-11' },
+      { type: 'bulk_buyer', count: classifications.bulk_buyer || 0, label: 'Potential Growth', icon: Package, color: 'text-purple-400', description: 'RFM 5-7' },
+      { type: 'regular', count: classifications.regular || 0, label: 'At-Risk Regular', icon: User, color: 'text-slate-400', description: 'RFM 3-4' }
     ];
 
     const batches = [];
@@ -120,23 +120,23 @@ const BatchDistributionPreview = ({ classifications, batchSize }) => {
 
       {/* Legend */}
       <div className="mt-4 pt-4 border-t border-[#2E2E2E]">
-        <p className="text-xs text-muted-foreground mb-2">Distribution Priority:</p>
+        <p className="text-xs text-muted-foreground mb-2">RFM Segmentation Priority:</p>
         <div className="flex flex-wrap gap-3 text-xs">
           <div className="flex items-center gap-1.5">
             <Crown className="w-3 h-3 text-emerald-400" />
-            <span className="text-muted-foreground">VIP (1st)</span>
+            <span className="text-muted-foreground">VIP Champions (1st) - RFM 12-15</span>
           </div>
           <div className="flex items-center gap-1.5">
             <Zap className="w-3 h-3 text-blue-400" />
-            <span className="text-muted-foreground">Frequent (2nd)</span>
+            <span className="text-muted-foreground">Loyal (2nd) - RFM 8-11</span>
           </div>
           <div className="flex items-center gap-1.5">
             <Package className="w-3 h-3 text-purple-400" />
-            <span className="text-muted-foreground">Bulk (3rd)</span>
+            <span className="text-muted-foreground">Potential (3rd) - RFM 5-7</span>
           </div>
           <div className="flex items-center gap-1.5">
             <User className="w-3 h-3 text-slate-400" />
-            <span className="text-muted-foreground">Regular (4th)</span>
+            <span className="text-muted-foreground">At-Risk (4th) - RFM 3-4</span>
           </div>
         </div>
       </div>
