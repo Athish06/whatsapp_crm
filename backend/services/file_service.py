@@ -251,7 +251,7 @@ class FileUploadService:
         file_id: str,
         user_id: str,
         db: AsyncIOMotorDatabase
-    ) -> Dict[str, str]:
+    ) -> Dict[str, Any]:
         """
         Delete a file from Backblaze B2 and MongoDB.
         
@@ -290,13 +290,46 @@ class FileUploadService:
                 except Exception as e:
                     logger.warning(f"Could not delete file from B2: {str(e)}")
             
-            # Delete associated customer data
+            # Delete associated customer data (both by file_id and source filename for backward compatibility)
             customers_deleted = await db.customers.delete_many({
                 "user_id": user_id,
-                "source_file": file_doc["original_file_name"]
+                "$or": [
+                    {"file_id": file_id},
+                    {"source_file": file_doc["original_file_name"]}
+                ]
             })
-            
-            logger.info(f"Deleted {customers_deleted.deleted_count} customers associated with file: {file_doc['original_file_name']}")
+
+            # Delete associated campaigns, batches, and messages for this file
+            batch_docs = await db.batches.find(
+                {"user_id": user_id, "file_id": file_id},
+                {"id": 1, "_id": 0}
+            ).to_list(10000)
+            batch_ids = [b.get("id") for b in batch_docs if b.get("id")]
+
+            campaigns_deleted = await db.campaigns.delete_many({
+                "user_id": user_id,
+                "file_id": file_id
+            })
+            messages_deleted = await db.messages.delete_many({
+                "user_id": user_id,
+                "$or": [
+                    {"file_id": file_id},
+                    {"batch_id": {"$in": batch_ids}}
+                ]
+            })
+            batches_deleted = await db.batches.delete_many({
+                "user_id": user_id,
+                "file_id": file_id
+            })
+
+            logger.info(
+                "Deleted related data for file %s: customers=%s campaigns=%s batches=%s messages=%s",
+                file_id,
+                customers_deleted.deleted_count,
+                campaigns_deleted.deleted_count,
+                batches_deleted.deleted_count,
+                messages_deleted.deleted_count,
+            )
             
             # Delete from MongoDB
             await db.files.delete_one({"_id": ObjectId(file_id)})
@@ -306,7 +339,10 @@ class FileUploadService:
             return {
                 "message": "File deleted successfully",
                 "file_id": file_id,
-                "customers_deleted": customers_deleted.deleted_count
+                "customers_deleted": customers_deleted.deleted_count,
+                "campaigns_deleted": campaigns_deleted.deleted_count,
+                "batches_deleted": batches_deleted.deleted_count,
+                "messages_deleted": messages_deleted.deleted_count,
             }
             
         except HTTPException:

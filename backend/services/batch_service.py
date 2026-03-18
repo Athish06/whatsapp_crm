@@ -154,12 +154,12 @@ class BatchService:
             for customer in batch_customers:
                 # Determine which template to use
                 if segment_templates:
-                    customer_segment = customer.get("segment", "regular")
+                    customer_segment = customer.get("segment", "boring")
                     customer_template_id = segment_templates.get(customer_segment)
                     
                     if not customer_template_id:
-                        # Fallback to regular template if segment not mapped
-                        customer_template_id = segment_templates.get("regular")
+                        # Fallback to boring or all-style mapping if segment not mapped
+                        customer_template_id = segment_templates.get("boring") or segment_templates.get("all")
                     
                     if not customer_template_id:
                         continue  # Skip if no template for this segment
@@ -171,14 +171,15 @@ class BatchService:
                 
                 message_content = prepare_message(customer_template["content"], customer)
                 
-                # Map segment to priority (1=VIP, 2=Loyal, 3=Potential, 4=Regular)
+                # Map segment to priority - Hybrid RFM+B Intelligence
                 segment_priority_map = {
-                    "vip": 1,
-                    "loyal": 2,
-                    "potential": 3,
-                    "regular": 4
+                    "vip": 1,                    # VIP Champions - highest priority
+                    "at_risk": 1,                # At-Risk - urgent (same as VIP)
+                    "potential_bulk": 2,         # Potential Bulk - increase spend
+                    "loyal_frequent": 3,         # Loyal Frequent - reward habit
+                    "boring": 4                  # Boring - low priority
                 }
-                customer_segment = customer.get("segment", "regular").lower()
+                customer_segment = customer.get("segment", "boring").lower()
                 message_priority = segment_priority_map.get(customer_segment, 4)
                 
                 message_doc = {
@@ -187,7 +188,7 @@ class BatchService:
                     "customer_id": customer["id"],
                     "phone_number": customer["phone"],
                     "customer_name": customer["name"],
-                    "customer_segment": customer.get("segment", "regular"),
+                    "customer_segment": customer.get("segment", "boring"),
                     "template_id": customer_template_id,
                     "message_content": message_content,
                     "status": MessageStatus.PENDING.value,
@@ -359,6 +360,147 @@ class BatchService:
             "batches_deleted": batches_result.deleted_count,
             "messages_deleted": messages_result.deleted_count,
             "campaigns_deleted": campaigns_result.deleted_count
+        }
+
+    async def pause_batch(self, batch_id: str, user_id: str) -> Dict[str, Any]:
+        """Pause a scheduled batch and lock remaining pending messages."""
+        batch = await self.db.batches.find_one({"id": batch_id, "user_id": user_id}, {"_id": 0})
+        if not batch:
+            raise ValueError("Batch not found")
+        if batch.get("status") in [BatchStatus.COMPLETED.value]:
+            raise ValueError("Completed batch cannot be paused")
+
+        pending_update = await self.db.messages.update_many(
+            {"batch_id": batch_id, "user_id": user_id, "status": MessageStatus.PENDING.value},
+            {"$set": {"status": "paused"}}
+        )
+        await self.db.batches.update_one(
+            {"id": batch_id, "user_id": user_id},
+            {"$set": {"status": BatchStatus.PAUSED.value}}
+        )
+
+        return {"message": "Batch paused", "messages_paused": pending_update.modified_count}
+
+    async def resume_batch(self, batch_id: str, user_id: str) -> Dict[str, Any]:
+        """Resume a paused batch."""
+        batch = await self.db.batches.find_one({"id": batch_id, "user_id": user_id}, {"_id": 0})
+        if not batch:
+            raise ValueError("Batch not found")
+        if batch.get("status") == BatchStatus.COMPLETED.value:
+            raise ValueError("Completed batch cannot be resumed")
+
+        paused_update = await self.db.messages.update_many(
+            {"batch_id": batch_id, "user_id": user_id, "status": "paused"},
+            {"$set": {"status": MessageStatus.PENDING.value}}
+        )
+        await self.db.batches.update_one(
+            {"id": batch_id, "user_id": user_id},
+            {"$set": {"status": BatchStatus.PENDING.value}}
+        )
+
+        return {"message": "Batch resumed", "messages_reactivated": paused_update.modified_count}
+
+    async def update_batch(self, batch_id: str, user_id: str, start_time: datetime = None, template_id: str = None, segment_templates: Dict[str, str] = None) -> Dict[str, Any]:
+        """Edit batch schedule time and template assignment for unsent messages."""
+        batch = await self.db.batches.find_one({"id": batch_id, "user_id": user_id}, {"_id": 0})
+        if not batch:
+            raise ValueError("Batch not found")
+        if batch.get("status") in [BatchStatus.SENDING.value, BatchStatus.COMPLETED.value]:
+            raise ValueError("Only non-running batches can be edited")
+
+        updates = {}
+        if start_time is not None:
+            updates["start_time"] = start_time.isoformat()
+
+        editable_statuses = [MessageStatus.PENDING.value, "paused", MessageStatus.FAILED.value]
+        message_query = {"batch_id": batch_id, "user_id": user_id, "status": {"$in": editable_statuses}}
+
+        if start_time is not None:
+            await self.db.messages.update_many(message_query, {"$set": {"scheduled_at": start_time}})
+
+        # Update message templates/content when requested
+        if segment_templates:
+            template_ids = list(set(segment_templates.values()))
+            templates = await self.db.templates.find({"id": {"$in": template_ids}, "user_id": user_id}, {"_id": 0}).to_list(100)
+            if len(templates) != len(template_ids):
+                raise ValueError("One or more templates not found")
+            template_map = {t["id"]: t for t in templates}
+
+            updates["segment_templates"] = segment_templates
+            updates["mode"] = "segment-based"
+
+            msgs = await self.db.messages.find(message_query, {"_id": 0, "id": 1, "customer_id": 1, "customer_segment": 1}).to_list(10000)
+            customer_ids = [m["customer_id"] for m in msgs if m.get("customer_id")]
+            customers = await self.db.customers.find({"id": {"$in": customer_ids}, "user_id": user_id}, {"_id": 0}).to_list(10000)
+            customer_map = {c["id"]: c for c in customers}
+
+            for msg in msgs:
+                customer = customer_map.get(msg.get("customer_id"))
+                if not customer:
+                    continue
+                seg = (msg.get("customer_segment") or "boring").lower()
+                selected_template_id = segment_templates.get(seg) or segment_templates.get("boring") or segment_templates.get("all")
+                if not selected_template_id:
+                    continue
+                tpl = template_map.get(selected_template_id)
+                if not tpl:
+                    continue
+                new_content = prepare_message(tpl["content"], customer)
+                await self.db.messages.update_one(
+                    {"id": msg["id"], "user_id": user_id},
+                    {"$set": {"template_id": selected_template_id, "message_content": new_content}}
+                )
+
+        elif template_id:
+            template = await self.db.templates.find_one({"id": template_id, "user_id": user_id}, {"_id": 0})
+            if not template:
+                raise ValueError("Template not found")
+
+            updates["template_id"] = template_id
+            updates["mode"] = "single-template"
+
+            msgs = await self.db.messages.find(message_query, {"_id": 0, "id": 1, "customer_id": 1}).to_list(10000)
+            customer_ids = [m["customer_id"] for m in msgs if m.get("customer_id")]
+            customers = await self.db.customers.find({"id": {"$in": customer_ids}, "user_id": user_id}, {"_id": 0}).to_list(10000)
+            customer_map = {c["id"]: c for c in customers}
+
+            for msg in msgs:
+                customer = customer_map.get(msg.get("customer_id"))
+                if not customer:
+                    continue
+                new_content = prepare_message(template["content"], customer)
+                await self.db.messages.update_one(
+                    {"id": msg["id"], "user_id": user_id},
+                    {"$set": {"template_id": template_id, "message_content": new_content}}
+                )
+
+        if updates:
+            await self.db.batches.update_one({"id": batch_id, "user_id": user_id}, {"$set": updates})
+
+        return {"message": "Batch updated successfully", "batch_id": batch_id}
+
+    async def delete_batch(self, batch_id: str, user_id: str) -> Dict[str, Any]:
+        """Delete an extra/wrongly created batch and its messages."""
+        batch = await self.db.batches.find_one({"id": batch_id, "user_id": user_id}, {"_id": 0})
+        if not batch:
+            raise ValueError("Batch not found")
+        if batch.get("status") == BatchStatus.SENDING.value:
+            raise ValueError("Cannot delete a batch while sending")
+
+        messages_result = await self.db.messages.delete_many({"batch_id": batch_id, "user_id": user_id})
+        batch_result = await self.db.batches.delete_one({"id": batch_id, "user_id": user_id})
+
+        if batch.get("campaign_id"):
+            remaining = await self.db.batches.count_documents({"campaign_id": batch.get("campaign_id"), "user_id": user_id})
+            if remaining == 0:
+                await self.db.campaigns.delete_one({"_id": batch.get("campaign_id"), "user_id": user_id})
+            else:
+                await self._update_campaign_stats(batch.get("campaign_id"))
+
+        return {
+            "message": "Batch deleted successfully",
+            "batch_deleted": batch_result.deleted_count,
+            "messages_deleted": messages_result.deleted_count,
         }
     
     async def _update_campaign_stats(self, campaign_id: str):

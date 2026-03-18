@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { dashboardAPI } from '../lib/api';
 import { Users, Send, AlertCircle, Activity, TrendingUp } from 'lucide-react';
 import { toast } from 'sonner';
 import { getErrorMessage } from '../lib/utils';
 
 const DashboardPage = () => {
+  const navigate = useNavigate();
   const [stats, setStats] = useState({
     total_customers: 0,
     messages_sent: 0,
@@ -35,28 +37,32 @@ const DashboardPage = () => {
       value: stats.total_customers,
       icon: Users,
       color: '#3ECF8E',
-      bgGlow: 'rgba(62, 207, 142, 0.1)'
+      bgGlow: 'rgba(62, 207, 142, 0.1)',
+      navigateTo: '/campaign'
     },
     {
       title: 'Messages Sent',
       value: stats.messages_sent,
       icon: Send,
       color: '#3B82F6',
-      bgGlow: 'rgba(59, 130, 246, 0.1)'
+      bgGlow: 'rgba(59, 130, 246, 0.1)',
+      navigateTo: '/monitor'
     },
     {
       title: 'Failed Messages',
       value: stats.messages_failed,
       icon: AlertCircle,
       color: '#EF4444',
-      bgGlow: 'rgba(239, 68, 68, 0.1)'
+      bgGlow: 'rgba(239, 68, 68, 0.1)',
+      navigateTo: '/monitor'
     },
     {
       title: 'Active Batches',
       value: stats.active_batches,
       icon: Activity,
       color: '#F59E0B',
-      bgGlow: 'rgba(245, 158, 11, 0.1)'
+      bgGlow: 'rgba(245, 158, 11, 0.1)',
+      navigateTo: '/monitor'
     }
   ];
 
@@ -88,7 +94,8 @@ const DashboardPage = () => {
             <div
               key={index}
               data-testid={`metric-card-${metric.title.toLowerCase().replace(/\s+/g, '-')}`}
-              className="relative bg-[#1C1C1C] border border-[#2E2E2E] rounded-lg p-6 hover:border-[#3E3E3E] transition-all overflow-hidden group"
+              onClick={() => navigate(metric.navigateTo)}
+              className="relative bg-[#1C1C1C] border border-[#2E2E2E] rounded-lg p-6 hover:border-[#3E3E3E] transition-all overflow-hidden group cursor-pointer"
             >
               {/* Glow effect */}
               <div 
@@ -126,8 +133,8 @@ const DashboardPage = () => {
           Quick Actions
         </h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <a
-            href="/campaign"
+          <Link
+            to="/campaign"
             data-testid="create-campaign-btn"
             className="p-4 bg-[#121212] border border-[#2E2E2E] rounded-md hover:border-[#3ECF8E] transition-all group"
           >
@@ -137,10 +144,10 @@ const DashboardPage = () => {
             <p className="text-sm text-muted-foreground">
               Upload customers and start a new messaging campaign
             </p>
-          </a>
+          </Link>
           
-          <a
-            href="/monitor"
+          <Link
+            to="/monitor"
             data-testid="monitor-batches-btn"
             className="p-4 bg-[#121212] border border-[#2E2E2E] rounded-md hover:border-[#3ECF8E] transition-all group"
           >
@@ -150,10 +157,10 @@ const DashboardPage = () => {
             <p className="text-sm text-muted-foreground">
               Track active and completed message batches
             </p>
-          </a>
+          </Link>
           
-          <a
-            href="/templates"
+          <Link
+            to="/templates"
             data-testid="manage-templates-btn"
             className="p-4 bg-[#121212] border border-[#2E2E2E] rounded-md hover:border-[#3ECF8E] transition-all group"
           >
@@ -163,7 +170,7 @@ const DashboardPage = () => {
             <p className="text-sm text-muted-foreground">
               Create and manage message templates
             </p>
-          </a>
+          </Link>
         </div>
       </div>
     </div>

@@ -4,7 +4,7 @@ Batch routes for campaign management.
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from datetime import datetime
-from schemas import BatchCreate, BatchSplitEstimate
+from schemas import BatchCreate, BatchSplitEstimate, BatchUpdateRequest
 from services import BatchService
 from middleware import get_current_user
 from config import get_db
@@ -75,6 +75,52 @@ async def list_batches(
     return {"batches": batches}
 
 
+@router.get("/file/{file_id}/summary")
+async def get_file_schedule_summary(
+    file_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+):
+    """Get scheduling summary for a specific uploaded file."""
+    try:
+        user_id = current_user.get("user_id") or current_user.get("id")
+
+        campaigns = await db.campaigns.find(
+            {"user_id": user_id, "file_id": file_id},
+            {"_id": 0, "campaign_name": 1, "created_at": 1, "status": 1}
+        ).sort("created_at", -1).to_list(100)
+
+        batches = await db.batches.find(
+            {"user_id": user_id, "file_id": file_id},
+            {"_id": 0, "id": 1, "status": 1, "success_count": 1, "failed_count": 1, "customer_count": 1, "created_at": 1}
+        ).to_list(5000)
+
+        batch_ids = [b.get("id") for b in batches if b.get("id")]
+        if batch_ids:
+            sent_messages = await db.messages.count_documents(
+                {"user_id": user_id, "batch_id": {"$in": batch_ids}, "status": {"$in": ["sent", "delivered"]}}
+            )
+            failed_messages = await db.messages.count_documents(
+                {"user_id": user_id, "batch_id": {"$in": batch_ids}, "status": {"$in": ["failed", "failed_permanently"]}}
+            )
+        else:
+            sent_messages = 0
+            failed_messages = 0
+
+        return {
+            "file_id": file_id,
+            "schedule_count": len(campaigns),
+            "total_batches": len(batches),
+            "active_batches": sum(1 for b in batches if b.get("status") in ["pending", "scheduled", "sending"]),
+            "messages_sent": sent_messages,
+            "messages_failed": failed_messages,
+            "last_scheduled_at": campaigns[0].get("created_at") if campaigns else None,
+            "campaigns": campaigns,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/{batch_id}/reschedule")
 async def reschedule_batch(
     batch_id: str,
@@ -97,6 +143,77 @@ async def reschedule_batch(
         return {"message": "Batch rescheduled successfully"}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.patch("/{batch_id}")
+async def update_batch(
+    batch_id: str,
+    payload: BatchUpdateRequest,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+):
+    """Edit scheduled batch time/templates before it is completed."""
+    try:
+        user_id = current_user.get("user_id") or current_user.get("id")
+        service = BatchService(db)
+        result = await service.update_batch(
+            batch_id=batch_id,
+            user_id=user_id,
+            start_time=payload.start_time,
+            template_id=payload.template_id,
+            segment_templates=payload.segment_templates,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{batch_id}/pause")
+async def pause_batch(
+    batch_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+):
+    """Pause a scheduled batch."""
+    try:
+        user_id = current_user.get("user_id") or current_user.get("id")
+        service = BatchService(db)
+        return await service.pause_batch(batch_id, user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{batch_id}/resume")
+async def resume_batch(
+    batch_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+):
+    """Resume a paused batch."""
+    try:
+        user_id = current_user.get("user_id") or current_user.get("id")
+        service = BatchService(db)
+        result = await service.resume_batch(batch_id, user_id)
+        background_tasks.add_task(service.process_pending_batches, user_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/{batch_id}")
+async def delete_batch(
+    batch_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+):
+    """Delete extra/wrongly created scheduled batch."""
+    try:
+        user_id = current_user.get("user_id") or current_user.get("id")
+        service = BatchService(db)
+        return await service.delete_batch(batch_id, user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/{batch_id}/messages")

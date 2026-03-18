@@ -19,10 +19,11 @@ async def create_template(
 ):
     """Create a new message template."""
     service = TemplateService(db)
+    user_id = current_user.get("user_id") or current_user.get("id")
     template = await service.create_template(
         template_data.name,
         template_data.content,
-        current_user["id"],
+        user_id,
         template_data.segment
     )
     return MessageTemplateResponse(**template)
@@ -35,7 +36,8 @@ async def list_templates(
 ):
     """List all templates for the current user."""
     service = TemplateService(db)
-    templates = await service.list_templates(current_user["id"])
+    user_id = current_user.get("user_id") or current_user.get("id")
+    templates = await service.list_templates(user_id)
     return {"templates": templates}
 
 
@@ -47,7 +49,8 @@ async def get_template(
 ):
     """Get a specific template by ID."""
     service = TemplateService(db)
-    template = await service.get_template(template_id, current_user["id"])
+    user_id = current_user.get("user_id") or current_user.get("id")
+    template = await service.get_template(template_id, user_id)
     
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -63,7 +66,8 @@ async def delete_template(
 ):
     """Delete a template."""
     service = TemplateService(db)
-    deleted = await service.delete_template(template_id, current_user["id"])
+    user_id = current_user.get("user_id") or current_user.get("id")
+    deleted = await service.delete_template(template_id, user_id)
     
     if not deleted:
         raise HTTPException(status_code=404, detail="Template not found")
