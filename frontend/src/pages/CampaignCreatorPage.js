@@ -26,13 +26,23 @@ const CampaignCreatorPage = () => {
   const [selectedFile, setSelectedFile] = useState(null);
   
   const [existingTemplates, setExistingTemplates] = useState([]);
+  const [openedFromExistingFile, setOpenedFromExistingFile] = useState(false);
+  const [fileScheduleSummary, setFileScheduleSummary] = useState(null);
+  const [templateMode, setTemplateMode] = useState('choose');
+  const [creatingTemplate, setCreatingTemplate] = useState(false);
+  const [newTemplate, setNewTemplate] = useState({
+    name: '',
+    content: '',
+    segment: 'vip'
+  });
   
-  // Segment-specific template selections (NEW: per-segment template mapping)
+  // Segment-specific template selections - Hybrid RFM+B Intelligence
   const [segmentTemplates, setSegmentTemplates] = useState({
-    both: '',
-    bulk_buyer: '',
-    frequent_customer: '',
-    regular: ''
+    vip: '',
+    at_risk: '',
+    potential_bulk: '',
+    loyal_frequent: '',
+    boring: ''
   });
   
   const [batchConfig, setBatchConfig] = useState({
@@ -129,6 +139,8 @@ const CampaignCreatorPage = () => {
       setDetectedColumns(detectedCols);
       setColumnMapping(suggestedMapping);
       setUploadedFile({ file_id: fileId, file_name: uploadResponse.data.file_name });
+      setOpenedFromExistingFile(false);
+      setFileScheduleSummary(null);
       
       // Step 3: Show column mapping dialog
       setView('columnMapping');
@@ -156,6 +168,8 @@ const CampaignCreatorPage = () => {
 
       setUploadData(response.data);
       setSelectedFile(uploadedFile);
+      setOpenedFromExistingFile(false);
+      setFileScheduleSummary(null);
       setAnalyzing(false);
       
       // Move to configure view
@@ -187,6 +201,15 @@ const CampaignCreatorPage = () => {
       }
       
       setUploadData(customerResponse.data);
+
+      try {
+        const summaryResponse = await batchesAPI.getFileSummary(file._id);
+        setFileScheduleSummary(summaryResponse.data);
+      } catch {
+        setFileScheduleSummary(null);
+      }
+
+      setOpenedFromExistingFile(true);
       setAnalyzing(false);
       
       // Skip to step 2
@@ -206,7 +229,9 @@ const CampaignCreatorPage = () => {
     setStep(1);
     setUploadData(null);
     setSelectedFile(null);
-    setSegmentTemplates({ both: '', bulk_buyer: '', frequent_customer: '', regular: '' });
+    setOpenedFromExistingFile(false);
+    setFileScheduleSummary(null);
+    setSegmentTemplates({ vip: '', at_risk: '', potential_bulk: '', loyal_frequent: '', boring: '' });
   };
 
   const handleBackToFiles = () => {
@@ -214,7 +239,44 @@ const CampaignCreatorPage = () => {
     setStep(1);
     setUploadData(null);
     setSelectedFile(null);
-    setSegmentTemplates({ both: '', bulk_buyer: '', frequent_customer: '', regular: '' });
+    setOpenedFromExistingFile(false);
+    setFileScheduleSummary(null);
+    setSegmentTemplates({ vip: '', at_risk: '', potential_bulk: '', loyal_frequent: '', boring: '' });
+  };
+
+  const handleQuickCreateTemplate = async () => {
+    if (!newTemplate.name.trim() || !newTemplate.content.trim()) {
+      toast.error('Enter template name and content');
+      return;
+    }
+
+    try {
+      setCreatingTemplate(true);
+      const response = await templatesAPI.create({
+        name: newTemplate.name.trim(),
+        content: newTemplate.content.trim(),
+        segment: newTemplate.segment,
+      });
+
+      const createdTemplate = response.data;
+      await loadExistingTemplates();
+
+      // Auto-assign newly created template for the selected segment
+      if (newTemplate.segment !== 'all') {
+        setSegmentTemplates((prev) => ({
+          ...prev,
+          [newTemplate.segment]: createdTemplate.id,
+        }));
+      }
+
+      setTemplateMode('choose');
+      setNewTemplate({ name: '', content: '', segment: 'vip' });
+      toast.success('Template created and added to scheduler');
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Failed to create template'));
+    } finally {
+      setCreatingTemplate(false);
+    }
   };
 
   const handleDeleteFile = async (fileId, fileName, event) => {
@@ -227,8 +289,10 @@ const CampaignCreatorPage = () => {
     }
     
     try {
-      await filesAPI.deleteFile(fileId);
-      toast.success('File deleted successfully');
+      const response = await filesAPI.deleteFile(fileId);
+      const deletedCustomers = response?.data?.customers_deleted || 0;
+      const deletedSchedules = response?.data?.campaigns_deleted || 0;
+      toast.success(`File deleted. Removed ${deletedCustomers} customers and ${deletedSchedules} schedules.`);
       
       // Reload files list
       loadExistingFiles();
@@ -286,6 +350,10 @@ const CampaignCreatorPage = () => {
         customer_ids: customerIds,
         batch_size: batchConfig.batch_size,
         start_time: new Date(batchConfig.start_time).toISOString(),
+        file_id: selectedFile?._id || selectedFile?.file_id,
+        campaign_name: selectedFile?.original_file_name
+          ? `${selectedFile.original_file_name} Schedule ${new Date().toLocaleString()}`
+          : undefined,
         priority: 0
       });
 
@@ -487,7 +555,7 @@ const CampaignCreatorPage = () => {
               <li>• <code className="font-mono bg-[#0C0C0C] px-2 py-0.5 rounded">order_value</code> - Total order value</li>
             </ul>
             <p className="text-xs text-muted-foreground mt-3">
-              💡 <strong>Note:</strong> The system will automatically classify customers as Bulk Buyers, Frequent Customers, or Both based on these metrics.
+              💡 <strong>Note:</strong> The system classifies customers into VIP, At-Risk, Potential (Bulk), Loyal (Frequent), and Boring segments.
             </p>
           </div>
         </div>
@@ -532,13 +600,57 @@ const CampaignCreatorPage = () => {
               {Object.entries(uploadData.classifications).map(([category, count]) => (
                 <div key={category} className="p-4 bg-[#121212] rounded-md">
                   <p className="text-sm text-muted-foreground mb-1 capitalize">
-                    {category === 'both' ? 'VIP' : category.replace('_', ' ')}
+                    {category.replace(/_/g, ' ')}
                   </p>
                   <p className="text-2xl font-semibold font-mono">{count}</p>
                 </div>
               ))}
             </div>
           </div>
+
+          {openedFromExistingFile && fileScheduleSummary && (
+            <div className="bg-[#1C1C1C] border border-[#2E2E2E] rounded-lg p-6">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-xl font-semibold mb-2" style={{ fontFamily: 'Chivo, sans-serif' }}>
+                    This File Scheduling History
+                  </h2>
+                  <p className="text-sm text-muted-foreground">
+                    Reopened file ready. You can create a fresh schedule with new templates.
+                  </p>
+                </div>
+                <button
+                  onClick={() => document.getElementById('template-selection-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                  className="px-4 py-2 bg-[#3ECF8E] text-black hover:bg-[#34B27B] font-medium rounded-md transition-all"
+                >
+                  New Schedule
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mt-4">
+                <div className="p-3 bg-[#121212] rounded-md">
+                  <p className="text-xs text-muted-foreground">Schedules Done</p>
+                  <p className="text-lg font-semibold font-mono">{fileScheduleSummary.schedule_count || 0}</p>
+                </div>
+                <div className="p-3 bg-[#121212] rounded-md">
+                  <p className="text-xs text-muted-foreground">Total Batches</p>
+                  <p className="text-lg font-semibold font-mono">{fileScheduleSummary.total_batches || 0}</p>
+                </div>
+                <div className="p-3 bg-[#121212] rounded-md">
+                  <p className="text-xs text-muted-foreground">Active</p>
+                  <p className="text-lg font-semibold font-mono">{fileScheduleSummary.active_batches || 0}</p>
+                </div>
+                <div className="p-3 bg-[#121212] rounded-md">
+                  <p className="text-xs text-muted-foreground">Messages Sent</p>
+                  <p className="text-lg font-semibold font-mono">{fileScheduleSummary.messages_sent || 0}</p>
+                </div>
+                <div className="p-3 bg-[#121212] rounded-md">
+                  <p className="text-xs text-muted-foreground">Failed</p>
+                  <p className="text-lg font-semibold font-mono">{fileScheduleSummary.messages_failed || 0}</p>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Batch Configuration */}
           <div className="bg-[#1C1C1C] border border-[#2E2E2E] rounded-lg p-6">
@@ -598,53 +710,120 @@ const CampaignCreatorPage = () => {
           />
 
           {/* NEW: Segment Template Selection */}
-          <div className="bg-[#1C1C1C] border border-[#2E2E2E] rounded-lg p-6">
+          <div id="template-selection-section" className="bg-[#1C1C1C] border border-[#2E2E2E] rounded-lg p-6">
             <h2 className="text-xl font-semibold mb-4" style={{ fontFamily: 'Chivo, sans-serif' }}>
               Assign Templates to Segments
             </h2>
             <p className="text-sm text-muted-foreground mb-6">
               Select a template for each customer segment. Templates will be automatically matched to customers based on their classification.
             </p>
+
+            <div className="flex items-center gap-2 mb-4">
+              <button
+                type="button"
+                onClick={() => setTemplateMode('choose')}
+                className={`px-3 py-1.5 rounded-md text-sm border ${templateMode === 'choose' ? 'bg-[#3ECF8E] text-black border-[#3ECF8E]' : 'bg-[#121212] text-white border-[#2E2E2E]'}`}
+              >
+                Choose Existing Templates
+              </button>
+              <button
+                type="button"
+                onClick={() => setTemplateMode('create')}
+                className={`px-3 py-1.5 rounded-md text-sm border ${templateMode === 'create' ? 'bg-[#3ECF8E] text-black border-[#3ECF8E]' : 'bg-[#121212] text-white border-[#2E2E2E]'}`}
+              >
+                Create Template Here
+              </button>
+            </div>
+
+            {templateMode === 'create' && (
+              <div className="mb-6 p-4 bg-[#121212] border border-[#2E2E2E] rounded-md space-y-3">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <input
+                    type="text"
+                    placeholder="Template name"
+                    value={newTemplate.name}
+                    onChange={(e) => setNewTemplate((prev) => ({ ...prev, name: e.target.value }))}
+                    className="bg-[#0C0C0C] border border-[#2E2E2E] focus:border-[#3ECF8E] rounded-md px-3 py-2 text-sm outline-none"
+                  />
+                  <select
+                    value={newTemplate.segment}
+                    onChange={(e) => setNewTemplate((prev) => ({ ...prev, segment: e.target.value }))}
+                    className="bg-[#0C0C0C] border border-[#2E2E2E] focus:border-[#3ECF8E] rounded-md px-3 py-2 text-sm outline-none"
+                  >
+                    <option value="all">All segments</option>
+                    <option value="vip">VIP</option>
+                    <option value="at_risk">At-Risk</option>
+                    <option value="potential_bulk">Potential (Bulk)</option>
+                    <option value="loyal_frequent">Loyal (Frequent)</option>
+                    <option value="boring">Boring</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={handleQuickCreateTemplate}
+                    disabled={creatingTemplate}
+                    className="bg-[#3ECF8E] text-black hover:bg-[#34B27B] rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50"
+                  >
+                    {creatingTemplate ? 'Creating...' : 'Create Template'}
+                  </button>
+                </div>
+                <textarea
+                  placeholder="Message content. Example: Hi {{name}}, your monthly stock-up offer is ready."
+                  value={newTemplate.content}
+                  onChange={(e) => setNewTemplate((prev) => ({ ...prev, content: e.target.value }))}
+                  className="w-full min-h-[110px] bg-[#0C0C0C] border border-[#2E2E2E] focus:border-[#3ECF8E] rounded-md p-3 text-sm outline-none"
+                />
+              </div>
+            )}
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Show selector only for segments with customers */}
-              {uploadData.classifications.both > 0 && (
+              {/* Show selector only for segments with customers - Hybrid RFM+B Intelligence */}
+              {uploadData.classifications.vip > 0 && (
                 <SegmentTemplateSelector
-                  segment="both"
+                  segment="vip"
                   templates={existingTemplates}
-                  selectedTemplateId={segmentTemplates.both}
-                  onSelect={(id) => setSegmentTemplates({...segmentTemplates, both: id})}
-                  customerCount={uploadData.classifications.both}
+                  selectedTemplateId={segmentTemplates.vip}
+                  onSelect={(id) => setSegmentTemplates({...segmentTemplates, vip: id})}
+                  customerCount={uploadData.classifications.vip}
                 />
               )}
               
-              {uploadData.classifications.frequent_customer > 0 && (
+              {uploadData.classifications.at_risk > 0 && (
                 <SegmentTemplateSelector
-                  segment="frequent_customer"
+                  segment="at_risk"
                   templates={existingTemplates}
-                  selectedTemplateId={segmentTemplates.frequent_customer}
-                  onSelect={(id) => setSegmentTemplates({...segmentTemplates, frequent_customer: id})}
-                  customerCount={uploadData.classifications.frequent_customer}
+                  selectedTemplateId={segmentTemplates.at_risk}
+                  onSelect={(id) => setSegmentTemplates({...segmentTemplates, at_risk: id})}
+                  customerCount={uploadData.classifications.at_risk}
                 />
               )}
               
-              {uploadData.classifications.bulk_buyer > 0 && (
+              {uploadData.classifications.potential_bulk > 0 && (
                 <SegmentTemplateSelector
-                  segment="bulk_buyer"
+                  segment="potential_bulk"
                   templates={existingTemplates}
-                  selectedTemplateId={segmentTemplates.bulk_buyer}
-                  onSelect={(id) => setSegmentTemplates({...segmentTemplates, bulk_buyer: id})}
-                  customerCount={uploadData.classifications.bulk_buyer}
+                  selectedTemplateId={segmentTemplates.potential_bulk}
+                  onSelect={(id) => setSegmentTemplates({...segmentTemplates, potential_bulk: id})}
+                  customerCount={uploadData.classifications.potential_bulk}
                 />
               )}
               
-              {uploadData.classifications.regular > 0 && (
+              {uploadData.classifications.loyal_frequent > 0 && (
                 <SegmentTemplateSelector
-                  segment="regular"
+                  segment="loyal_frequent"
                   templates={existingTemplates}
-                  selectedTemplateId={segmentTemplates.regular}
-                  onSelect={(id) => setSegmentTemplates({...segmentTemplates, regular: id})}
-                  customerCount={uploadData.classifications.regular}
+                  selectedTemplateId={segmentTemplates.loyal_frequent}
+                  onSelect={(id) => setSegmentTemplates({...segmentTemplates, loyal_frequent: id})}
+                  customerCount={uploadData.classifications.loyal_frequent}
+                />
+              )}
+              
+              {uploadData.classifications.boring > 0 && (
+                <SegmentTemplateSelector
+                  segment="boring"
+                  templates={existingTemplates}
+                  selectedTemplateId={segmentTemplates.boring}
+                  onSelect={(id) => setSegmentTemplates({...segmentTemplates, boring: id})}
+                  customerCount={uploadData.classifications.boring}
                 />
               )}
             </div>

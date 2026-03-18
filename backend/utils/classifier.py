@@ -46,24 +46,33 @@ def classify_customers_rfm(
     today: Optional[pd.Timestamp] = None
 ) -> tuple[pd.DataFrame, Dict[str, int], Dict[str, Any]]:
     """
-    Hybrid RFM Segmentation with Log Transform + Z-Score + Quintile Scoring.
+    Hybrid RFM+B Intelligence: Enterprise-Grade Segmentation with Bulkiness Factor.
+    
+    Phase 1: Feature Engineering (Raw Metrics)
+        - Recency (R_raw): Days since last purchase
+        - Frequency (F_raw): Total purchase count
+        - Monetary (M_raw): Total spending
+        - Bulkiness (B_raw): Avg items per transaction (Basket Size)
+    
+    Phase 2: Quintile Scoring (1-5 scale)
+        - R: Lower is better (recent = 5)
+        - F, M: Higher is better (top 20% = 5)
+        - Total Score = R + F + M (range: 3-15)
+    
+    Phase 3: 5-Tier Waterfall Decision Tree
+        1. VIP: Total >= 12
+        2. At-Risk: R=1 AND Total>4 (urgent churn prevention)
+        3. Potential (Bulk): 5-11 AND B > Store Average
+        4. Loyal (Frequent): 5-11 AND F >= M
+        5. Boring: Total <= 4 OR no other rules met
     
     Args:
         df: DataFrame with customer data
         column_mapping: Map of standard names to actual column names
         today: Reference date for recency calculation (defaults to today)
     
-    RFM Logic:
-        1. Calculate R (recency in days), F (frequency), M (monetary)
-        2. Log transform: log(x+1) to handle outliers
-        3. Z-score scaling: standardize to mean=0
-        4. Quintile scoring: divide into 5 groups, score 1-5
-        5. Total RFM Score = R_Score + F_Score + M_Score (3-15)
-        6. Segment mapping:
-           - 12-15: Both (VIP/Champion)
-           - 8-11: Frequent/Loyal
-           - 5-7: Bulk/Potential
-           - 3-4: Regular/At-Risk
+    Returns:
+        Tuple of (classified_df, segment_counts, rfm_info)
     """
     # Apply column mapping if provided
     if column_mapping:
@@ -80,12 +89,15 @@ def classify_customers_rfm(
         df['purchase_count'] = 1
     if 'order_value' not in df.columns:
         df['order_value'] = 0
+    if 'total_quantity' not in df.columns:
+        df['total_quantity'] = 0
     if 'last_transaction_date' not in df.columns:
         df['last_transaction_date'] = pd.Timestamp.now()
     
     # Convert to numeric types
     df['purchase_count'] = pd.to_numeric(df['purchase_count'], errors='coerce').fillna(1).replace(0, 1)
     df['order_value'] = pd.to_numeric(df['order_value'], errors='coerce').fillna(0)
+    df['total_quantity'] = pd.to_numeric(df['total_quantity'], errors='coerce').fillna(0)
     
     # Parse last transaction date
     if today is None:
@@ -94,30 +106,18 @@ def classify_customers_rfm(
     df['last_transaction_date'] = pd.to_datetime(df['last_transaction_date'], errors='coerce')
     df['last_transaction_date'] = df['last_transaction_date'].fillna(today)
     
-    # ==== STEP 1: Calculate RFM Metrics ====
+    # ==== PHASE 1: FEATURE ENGINEERING (Raw Metrics) ====
     df['recency'] = (today - df['last_transaction_date']).dt.days
     df['recency'] = df['recency'].clip(lower=0)  # Ensure non-negative
     df['frequency'] = df['purchase_count']
     df['monetary'] = df['order_value']
+    df['bulkiness'] = df['total_quantity'] / df['purchase_count']  # Avg items per transaction
+    df['bulkiness'] = df['bulkiness'].fillna(0)
     
-    # ==== STEP 2: Log Transform + Z-Score Scaling ====
-    # Log transform to handle outliers
-    df['recency_log'] = np.log1p(df['recency'])  # log(x+1)
-    df['frequency_log'] = np.log1p(df['frequency'])
-    df['monetary_log'] = np.log1p(df['monetary'])
+    # Calculate store average bulkiness for threshold
+    store_avg_bulkiness = df['bulkiness'].mean()
     
-    # Z-score normalization (mean=0, std=1) - handle edge cases
-    try:
-        df['recency_scaled'] = stats.zscore(df['recency_log'])
-        df['frequency_scaled'] = stats.zscore(df['frequency_log'])
-        df['monetary_scaled'] = stats.zscore(df['monetary_log'])
-    except:
-        # If std is 0 (all values same), use 0
-        df['recency_scaled'] = 0
-        df['frequency_scaled'] = 0
-        df['monetary_scaled'] = 0
-    
-    # ==== STEP 3: Quintile Scoring (1-5) ====
+    # ==== PHASE 2: QUINTILE SCORING (1-5) ====
     # For Recency: LOWER is BETTER (recent customers score higher)
     try:
         df['r_score'] = pd.qcut(df['recency'], q=5, labels=[5, 4, 3, 2, 1], duplicates='drop')
@@ -152,21 +152,37 @@ def classify_customers_rfm(
         else:
             df['m_score'] = df['m_score'].fillna(3).astype(int)
     
-    # ==== STEP 4: Calculate Total RFM Score ====
+    # Calculate Total RFM Score
     df['rfm_score'] = df['r_score'] + df['f_score'] + df['m_score']
     
-    # ==== STEP 5: Segment Mapping ====
-    def map_segment(score):
-        if 12 <= score <= 15:
-            return CustomerCategory.BOTH.value  # VIP/Champion
-        elif 8 <= score <= 11:
-            return CustomerCategory.FREQUENT_CUSTOMER.value  # Frequent/Loyal
-        elif 5 <= score <= 7:
-            return CustomerCategory.BULK_BUYER.value  # Bulk/Potential
-        else:  # 3-4
-            return CustomerCategory.REGULAR.value  # Regular/At-Risk
+    # ==== PHASE 3: 5-TIER WATERFALL DECISION TREE ====
+    def apply_waterfall_segmentation(row):
+        total_score = row['rfm_score']
+        r_score = row['r_score']
+        f_score = row['f_score']
+        m_score = row['m_score']
+        bulkiness = row['bulkiness']
+        
+        # Rule 1: VIP Check
+        if total_score >= 12:
+            return CustomerCategory.VIP.value
+        
+        # Rule 2: At-Risk Check (The Rescue Logic)
+        if r_score == 1 and total_score > 4:
+            return CustomerCategory.AT_RISK.value
+        
+        # Rule 3: Potential Bulk Check
+        if 5 <= total_score <= 11 and bulkiness > store_avg_bulkiness:
+            return CustomerCategory.POTENTIAL_BULK.value
+        
+        # Rule 4: Loyal Frequent Check
+        if 5 <= total_score <= 11 and f_score >= m_score:
+            return CustomerCategory.LOYAL_FREQUENT.value
+        
+        # Rule 5: Boring (Baseline)
+        return CustomerCategory.BORING.value
     
-    df['category'] = df['rfm_score'].apply(map_segment)
+    df['category'] = df.apply(apply_waterfall_segmentation, axis=1)
     df['segment'] = df['category']
     
     # Calculate classification counts
@@ -174,15 +190,24 @@ def classify_customers_rfm(
     
     # Calculate metrics for transparency
     rfm_info = {
-        'method': 'Hybrid RFM (Log + Z-Score + Quintile)',
+        'method': 'Hybrid RFM+B Intelligence',
         'recency_mean': float(df['recency'].mean()),
         'frequency_mean': float(df['frequency'].mean()),
         'monetary_mean': float(df['monetary'].mean()),
+        'bulkiness_mean': float(df['bulkiness'].mean()),
+        'store_avg_bulkiness': float(store_avg_bulkiness),
+        'segment_distribution': {
+            'VIP': int((df['segment'] == CustomerCategory.VIP.value).sum()),
+            'At-Risk': int((df['segment'] == CustomerCategory.AT_RISK.value).sum()),
+            'Potential (Bulk)': int((df['segment'] == CustomerCategory.POTENTIAL_BULK.value).sum()),
+            'Loyal (Frequent)': int((df['segment'] == CustomerCategory.LOYAL_FREQUENT.value).sum()),
+            'Boring': int((df['segment'] == CustomerCategory.BORING.value).sum())
+        },
         'rfm_score_distribution': {
-            '12-15 (VIP)': int((df['rfm_score'] >= 12).sum()),
-            '8-11 (Loyal)': int(((df['rfm_score'] >= 8) & (df['rfm_score'] < 12)).sum()),
-            '5-7 (Potential)': int(((df['rfm_score'] >= 5) & (df['rfm_score'] < 8)).sum()),
-            '3-4 (At-Risk)': int((df['rfm_score'] < 5).sum())
+            '12-15': int((df['rfm_score'] >= 12).sum()),
+            '8-11': int(((df['rfm_score'] >= 8) & (df['rfm_score'] < 12)).sum()),
+            '5-7': int(((df['rfm_score'] >= 5) & (df['rfm_score'] < 8)).sum()),
+            '3-4': int((df['rfm_score'] < 5).sum())
         }
     }
     

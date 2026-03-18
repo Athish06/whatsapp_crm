@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { templatesAPI } from '../lib/api';
-import { Plus, Trash2, FileText, X, Crown, Package, Zap, User, Users } from 'lucide-react';
+import { Plus, Trash2, FileText, X, Crown, AlertTriangle, Package, Zap, User, Users } from 'lucide-react';
 import { toast } from 'sonner';
 
 const TemplatesPage = () => {
@@ -11,13 +11,14 @@ const TemplatesPage = () => {
   const [creating, setCreating] = useState(false);
   const [filterSegment, setFilterSegment] = useState('all');
 
-  // Segment configuration
+  // Segment configuration - Hybrid RFM+B Intelligence
   const segments = [
     { value: 'all', label: 'All Customers', icon: Users, color: 'gray' },
-    { value: 'both', label: 'VIP', icon: Crown, color: 'emerald' },
-    { value: 'bulk_buyer', label: 'Bulk Buyers', icon: Package, color: 'purple' },
-    { value: 'frequent_customer', label: 'Frequent Customers', icon: Zap, color: 'blue' },
-    { value: 'regular', label: 'Regular', icon: User, color: 'slate' }
+    { value: 'vip', label: 'VIP Champions', icon: Crown, color: 'yellow' },
+    { value: 'at_risk', label: 'At-Risk', icon: AlertTriangle, color: 'red' },
+    { value: 'potential_bulk', label: 'Potential (Bulk)', icon: Package, color: 'purple' },
+    { value: 'loyal_frequent', label: 'Loyal (Frequent)', icon: Zap, color: 'blue' },
+    { value: 'boring', label: 'Boring', icon: User, color: 'slate' }
   ];
 
   const getSegmentConfig = (segmentValue) => {
@@ -27,7 +28,8 @@ const TemplatesPage = () => {
   const getSegmentColors = (color) => {
     const colors = {
       gray: { bg: 'bg-gray-500/10', text: 'text-gray-400', border: 'border-gray-500/30' },
-      emerald: { bg: 'bg-emerald-500/10', text: 'text-emerald-400', border: 'border-emerald-500/30' },
+      yellow: { bg: 'bg-yellow-500/10', text: 'text-yellow-400', border: 'border-yellow-500/30' },
+      red: { bg: 'bg-red-500/10', text: 'text-red-400', border: 'border-red-500/30' },
       purple: { bg: 'bg-purple-500/10', text: 'text-purple-400', border: 'border-purple-500/30' },
       blue: { bg: 'bg-blue-500/10', text: 'text-blue-400', border: 'border-blue-500/30' },
       slate: { bg: 'bg-slate-500/10', text: 'text-slate-400', border: 'border-slate-500/30' }

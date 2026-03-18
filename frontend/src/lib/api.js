@@ -68,9 +68,14 @@ export const batchesAPI = {
   create: (data) => api.post('/batches/create', data),
   list: () => api.get('/batches/list'),
   reschedule: (id) => api.post(`/batches/${id}/reschedule`),
+  pause: (id) => api.post(`/batches/${id}/pause`),
+  resume: (id) => api.post(`/batches/${id}/resume`),
+  update: (id, data) => api.patch(`/batches/${id}`, data),
+  delete: (id) => api.delete(`/batches/${id}`),
   getMessages: (id) => api.get(`/batches/${id}/messages`),
   clearAll: () => api.delete('/batches/clear-all'),
   getQueueStats: () => api.get('/batches/queue/stats'),
+  getFileSummary: (fileId) => api.get(`/batches/file/${fileId}/summary`),
 };
 
 // API endpoints for files

@@ -267,16 +267,19 @@ class CustomerService:
         
         # Calculate classifications
         classifications = {
-            "bulk_buyer": 0,
-            "frequent_customer": 0,
-            "both": 0,
-            "regular": 0
+            "vip": 0,
+            "at_risk": 0,
+            "potential_bulk": 0,
+            "loyal_frequent": 0,
+            "boring": 0,
         }
         
         for customer in customers:
-            category = customer.get("category", "regular")
-            if category in classifications:
-                classifications[category] += 1
+            segment = customer.get("segment") or customer.get("category") or "boring"
+            if segment in classifications:
+                classifications[segment] += 1
+            else:
+                classifications["boring"] += 1
         
         return {
             "total_customers": len(customers),

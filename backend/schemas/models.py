@@ -8,11 +8,12 @@ from enum import Enum
 
 
 class CustomerCategory(str, Enum):
-    """Customer classification categories."""
-    BULK_BUYER = "bulk_buyer"
-    FREQUENT_CUSTOMER = "frequent_customer"
-    BOTH = "both"
-    REGULAR = "regular"
+    """Customer classification categories - Hybrid RFM+B Intelligence."""
+    VIP = "vip"                          # Champions (RFM >= 12)
+    AT_RISK = "at_risk"                  # Lapsing High-Potentials (R=1, Total>4)
+    POTENTIAL_BULK = "potential_bulk"    # Pantry Stockers (5-11, High Bulkiness)
+    LOYAL_FREQUENT = "loyal_frequent"    # Daily Habit Shoppers (5-11, F>=M)
+    BORING = "boring"                    # Low-engagement Baseline (RFM <= 4)
 
 
 class BatchStatus(str, Enum):
@@ -35,11 +36,12 @@ class MessageStatus(str, Enum):
 
 
 class MessagePriority(int, Enum):
-    """Message priority levels."""
-    VIP = 1           # VIP Champions (RFM 12-15)
-    LOYAL = 2         # Loyal Customers (RFM 8-11)
-    POTENTIAL = 3     # Potential Growth (RFM 5-7)
-    REGULAR = 4       # At-Risk Regular (RFM 3-4)
+    """Message priority levels - Hybrid RFM+B Intelligence."""
+    VIP = 1                # VIP Champions (Retain gold assets)
+    AT_RISK = 1            # At-Risk (Urgent - prevent churn)
+    POTENTIAL_BULK = 2     # Potential Bulk (Increase spend per visit)
+    LOYAL_FREQUENT = 3     # Loyal Frequent (Reward the habit)
+    BORING = 4             # Boring (Low priority)
 
 
 # ============ Auth Schemas ============
@@ -140,6 +142,13 @@ class BatchCreate(BaseModel):
     batch_size: int
     start_time: datetime
     priority: int = 0
+
+
+class BatchUpdateRequest(BaseModel):
+    """Edit scheduled batch request."""
+    start_time: Optional[datetime] = None
+    template_id: Optional[str] = None
+    segment_templates: Optional[Dict[str, str]] = None
 
 
 class BatchResponse(BaseModel):
