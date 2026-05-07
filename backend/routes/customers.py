@@ -53,6 +53,7 @@ async def process_uploaded_file(
             user_id,
             file_url=file_doc.get("file_url"),
             file_id=str(file_doc["_id"]),
+            campaign_id=file_doc.get("campaign_id"),
             column_mapping=body.column_mapping,
             percentile=body.percentile
         )
@@ -114,6 +115,7 @@ async def upload_customers_with_mapping(
     file: UploadFile = File(...),
     column_mapping: str = Form(...),
     percentile: Optional[int] = Form(70),
+    campaign_id: Optional[str] = Form(None),
     current_user: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
@@ -163,7 +165,9 @@ async def upload_customers_with_mapping(
         file_metadata = await file_service.upload_file(
             file=file,
             user_id=user_id,
-            db=db
+            db=db,
+            data_purpose="customer_summary",
+            campaign_id=campaign_id,
         )
         
         # Process customer data with dynamic segmentation
@@ -174,6 +178,7 @@ async def upload_customers_with_mapping(
             user_id,
             file_url=file_metadata["file_url"],
             file_id=file_metadata["file_id"],
+            campaign_id=file_metadata.get("campaign_id"),
             column_mapping=mapping_dict,
             percentile=percentile
         )
@@ -194,6 +199,7 @@ async def upload_customers_with_mapping(
 @router.post("/upload", response_model=CustomerUploadResponse)
 async def upload_customers(
     file: UploadFile = File(...),
+    campaign_id: Optional[str] = Form(None),
     current_user: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
@@ -243,7 +249,9 @@ async def upload_customers(
         file_metadata = await file_service.upload_file(
             file=file,
             user_id=user_id,
-            db=db
+            db=db,
+            data_purpose="customer_summary",
+            campaign_id=campaign_id,
         )
         
         # Step 2: Process customer data from file content
@@ -253,7 +261,8 @@ async def upload_customers(
             file.filename, 
             user_id,
             file_url=file_metadata["file_url"],
-            file_id=file_metadata["file_id"]
+            file_id=file_metadata["file_id"],
+            campaign_id=file_metadata.get("campaign_id"),
         )
         
         return CustomerUploadResponse(**result)

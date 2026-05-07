@@ -29,9 +29,12 @@ export const dashboardAPI = {
 
 // API endpoints for customers
 export const customersAPI = {
-  upload: (file) => {
+  upload: (file, campaignId = null) => {
     const formData = new FormData();
     formData.append('file', file);
+    if (campaignId) {
+      formData.append('campaign_id', campaignId);
+    }
     return api.post('/customers/upload', formData);
   },
   detectColumns: (file) => {
@@ -39,11 +42,14 @@ export const customersAPI = {
     formData.append('file', file);
     return api.post('/customers/detect-columns', formData);
   },
-  uploadWithMapping: (file, columnMapping, percentile = 70) => {
+  uploadWithMapping: (file, columnMapping, percentile = 70, campaignId = null) => {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('column_mapping', JSON.stringify(columnMapping));
     formData.append('percentile', percentile.toString());
+    if (campaignId) {
+      formData.append('campaign_id', campaignId);
+    }
     return api.post('/customers/upload-with-mapping', formData);
   },
   processWithMapping: (fileId, data) => api.post(`/customers/process-file/${fileId}`, data),

@@ -92,7 +92,10 @@ class FileUploadService:
         self,
         file: UploadFile,
         user_id: str,
-        db: AsyncIOMotorDatabase
+        db: AsyncIOMotorDatabase,
+        data_purpose: str = "customer_summary",
+        linked_customer_file_id: str = None,
+        campaign_id: str = None,
     ) -> Dict[str, Any]:
         """
         Upload file to Backblaze B2 and store metadata in MongoDB.
@@ -146,8 +149,14 @@ class FileUploadService:
                     "file_size": existing_file["file_size"],
                     "uploaded_at": existing_file["uploaded_at"],
                     "user_id": user_id,
+                    "campaign_id": existing_file.get("campaign_id"),
                     "duplicate": True  # Flag to notify frontend
                 }
+
+            # Keep all data files grouped under a campaign container.
+            resolved_campaign_id = campaign_id
+            if not resolved_campaign_id and data_purpose == "customer_summary":
+                resolved_campaign_id = str(uuid.uuid4())
             
             # Upload to Backblaze B2
             file_info = self.bucket.upload_bytes(
@@ -175,6 +184,9 @@ class FileUploadService:
                 "file_url": file_url,
                 "file_size": file_size,
                 "file_type": content_type,
+                "data_purpose": data_purpose,
+                "linked_customer_file_id": linked_customer_file_id,
+                "campaign_id": resolved_campaign_id,
                 "uploaded_at": datetime.now(),
                 "b2_file_id": file_info.id_,
             }
@@ -190,6 +202,7 @@ class FileUploadService:
                 "file_name": file.filename,
                 "file_url": file_url,
                 "file_size": file_size,
+                "campaign_id": resolved_campaign_id,
                 "uploaded_at": file_metadata["uploaded_at"],
                 "user_id": user_id
             }

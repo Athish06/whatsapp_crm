@@ -119,6 +119,7 @@ class CustomerService:
         user_id: str,
         file_url: str = None,
         file_id: str = None,
+        campaign_id: str = None,
         column_mapping: Optional[Dict[str, str]] = None,
         percentile: int = 70
     ) -> Dict[str, Any]:
@@ -152,6 +153,7 @@ class CustomerService:
             customer_doc = {
                 "id": str(uuid.uuid4()),
                 "user_id": user_id,
+                "campaign_id": campaign_id,
                 "name": str(customer_data.get('name', '')).strip(),
                 "phone": str(customer_data.get('phone', '')).strip(),
                 "email": str(customer_data.get('email', '')).strip(),
@@ -204,7 +206,13 @@ class CustomerService:
             
             customers.append(customer_doc)
         
-        # Insert/Update customers in database (upsert to prevent duplicates)
+        # Overwrite snapshot per campaign container.
+        delete_filter = {"user_id": user_id, "campaign_id": campaign_id}
+        if not campaign_id:
+            delete_filter = {"user_id": user_id, "campaign_id": {"$exists": False}}
+        await self.db.customers.delete_many(delete_filter)
+
+        # Insert/Update customers in database (upsert keeps unique phone safety inside current snapshot)
         if customers:
             from pymongo import UpdateOne
             
@@ -213,7 +221,11 @@ class CustomerService:
             for customer in customers:
                 operations.append(
                     UpdateOne(
-                        {"user_id": customer["user_id"], "phone": customer["phone"]},  # Match by user + phone
+                        {
+                            "user_id": customer["user_id"],
+                            "campaign_id": customer.get("campaign_id"),
+                            "phone": customer["phone"],
+                        },  # Match by user + campaign + phone
                         {"$set": customer},  # Update all fields
                         upsert=True  # Insert if not exists
                     )

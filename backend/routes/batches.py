@@ -2,7 +2,7 @@
 Batch routes for campaign management.
 """
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from typing import Any
 from datetime import datetime
 from schemas import BatchCreate, BatchSplitEstimate, BatchUpdateRequest
 from services import BatchService
@@ -27,7 +27,7 @@ async def create_batch(
     batch_data: BatchCreate,
     background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db)
+    db: Any = Depends(get_db)
 ):
     """Create a batch campaign.
     
@@ -49,7 +49,7 @@ async def create_batch(
             template_id=batch_data.template_id,
             segment_templates=batch_data.segment_templates,
             campaign_name=batch_data.campaign_name,
-            file_id=batch_data.file_id
+            file_id=batch_data.file_id,
         )
         
         # Schedule batch processing in background
@@ -66,7 +66,7 @@ async def create_batch(
 @router.get("/list")
 async def list_batches(
     current_user: dict = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db)
+    db: Any = Depends(get_db)
 ):
     """List all batches for the current user."""
     user_id = current_user.get("user_id") or current_user.get("id")
@@ -79,7 +79,7 @@ async def list_batches(
 async def get_file_schedule_summary(
     file_id: str,
     current_user: dict = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db)
+    db: Any = Depends(get_db)
 ):
     """Get scheduling summary for a specific uploaded file."""
     try:
@@ -94,6 +94,8 @@ async def get_file_schedule_summary(
             {"user_id": user_id, "file_id": file_id},
             {"_id": 0, "id": 1, "status": 1, "success_count": 1, "failed_count": 1, "customer_count": 1, "created_at": 1}
         ).to_list(5000)
+
+        queue_pending = await db.msg_queues.count_documents({"user_id": user_id, "batch_id": {"$in": [b.get("id") for b in batches if b.get("id")]}, "status": "pending"}) if batches else 0
 
         batch_ids = [b.get("id") for b in batches if b.get("id")]
         if batch_ids:
@@ -114,6 +116,7 @@ async def get_file_schedule_summary(
             "active_batches": sum(1 for b in batches if b.get("status") in ["pending", "scheduled", "sending"]),
             "messages_sent": sent_messages,
             "messages_failed": failed_messages,
+            "messages_in_queue": queue_pending,
             "last_scheduled_at": campaigns[0].get("created_at") if campaigns else None,
             "campaigns": campaigns,
         }
@@ -126,7 +129,7 @@ async def reschedule_batch(
     batch_id: str,
     background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db)
+    db: Any = Depends(get_db)
 ):
     """Reschedule a failed batch."""
     try:
@@ -150,7 +153,7 @@ async def update_batch(
     batch_id: str,
     payload: BatchUpdateRequest,
     current_user: dict = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db)
+    db: Any = Depends(get_db)
 ):
     """Edit scheduled batch time/templates before it is completed."""
     try:
@@ -172,7 +175,7 @@ async def update_batch(
 async def pause_batch(
     batch_id: str,
     current_user: dict = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db)
+    db: Any = Depends(get_db)
 ):
     """Pause a scheduled batch."""
     try:
@@ -188,7 +191,7 @@ async def resume_batch(
     batch_id: str,
     background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db)
+    db: Any = Depends(get_db)
 ):
     """Resume a paused batch."""
     try:
@@ -205,7 +208,7 @@ async def resume_batch(
 async def delete_batch(
     batch_id: str,
     current_user: dict = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db)
+    db: Any = Depends(get_db)
 ):
     """Delete extra/wrongly created scheduled batch."""
     try:
@@ -220,7 +223,7 @@ async def delete_batch(
 async def get_batch_messages(
     batch_id: str,
     current_user: dict = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db)
+    db: Any = Depends(get_db)
 ):
     """Get all messages for a batch."""
     service = BatchService(db)
@@ -231,7 +234,7 @@ async def get_batch_messages(
 @router.delete("/clear-all")
 async def clear_all_batches(
     current_user: dict = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db)
+    db: Any = Depends(get_db)
 ):
     """Clear all batches and messages for the current user."""
     try:
@@ -246,7 +249,7 @@ async def clear_all_batches(
 @router.get("/campaigns/list")
 async def list_campaigns(
     current_user: dict = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db)
+    db: Any = Depends(get_db)
 ):
     """List all campaigns for the current user."""
     try:
@@ -272,7 +275,7 @@ async def list_campaigns(
 async def get_campaign_details(
     campaign_id: str,
     current_user: dict = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db)
+    db: Any = Depends(get_db)
 ):
     """Get detailed information about a campaign including its batches."""
     try:
@@ -291,6 +294,12 @@ async def get_campaign_details(
             {"campaign_id": campaign_id},
             {"_id": 0}
         ).sort("batch_number", 1).to_list(1000)
+
+        # Get live campaign_batches map for this campaign
+        campaign_batches = await db.campaign_batches.find(
+            {"campaign_id": campaign_id, "user_id": user_id},
+            {"_id": 0}
+        ).sort("batch_number", 1).to_list(1000)
         
         # Convert datetime fields
         if isinstance(campaign.get("created_at"), datetime):
@@ -301,7 +310,8 @@ async def get_campaign_details(
         
         return {
             "campaign": campaign,
-            "batches": batches
+            "batches": batches,
+            "campaign_batches": campaign_batches,
         }
     except HTTPException:
         raise
@@ -312,7 +322,7 @@ async def get_campaign_details(
 @router.get("/queue/stats")
 async def get_queue_stats(
     current_user: dict = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db)
+    db: Any = Depends(get_db)
 ):
     """Get message queue statistics."""
     try:
