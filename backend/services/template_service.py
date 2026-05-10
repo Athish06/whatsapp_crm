@@ -24,7 +24,8 @@ class TemplateService:
         name: str, 
         content: str, 
         user_id: str,
-        segment: str = "all"
+        segment: str = "all",
+        shop_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Create a new message template."""
         placeholders = self.extract_placeholders(content)
@@ -32,6 +33,7 @@ class TemplateService:
         template_doc = {
             "id": str(uuid.uuid4()),
             "user_id": user_id,
+            "shop_id": shop_id,
             "name": name,
             "content": content,
             "segment": segment,
@@ -42,10 +44,14 @@ class TemplateService:
         await self.db.templates.insert_one(template_doc)
         return template_doc
     
-    async def list_templates(self, user_id: str) -> List[Dict[str, Any]]:
-        """List all templates for a user."""
+    async def list_templates(self, user_id: str, shop_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List all templates for a user, optionally filtered by shop."""
+        query = {"user_id": user_id}
+        if shop_id:
+            # Return templates for this shop OR global templates (no shop_id)
+            query["$or"] = [{"shop_id": shop_id}, {"shop_id": None}, {"shop_id": {"$exists": False}}]
         templates = await self.db.templates.find(
-            {"user_id": user_id},
+            query,
             {"_id": 0}
         ).sort("created_at", -1).to_list(100)
         

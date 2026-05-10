@@ -5,6 +5,7 @@ import { Toaster } from 'sonner';
 import LoginPage from './pages/LoginPage';
 import ForgotPasswordPage from './pages/ForgotPasswordPage';
 import DashboardPage from './pages/DashboardPage';
+import ShopDashboardPage from './pages/ShopDashboardPage';
 import CampaignCreatorPage from './pages/CampaignCreatorPage';
 import BatchMonitorPage from './pages/BatchMonitorPage';
 import TemplatesPage from './pages/TemplatesPage';
@@ -39,18 +40,6 @@ const DashboardLayout = ({ children }) => {
     </div>
   );
 };
-
-const HistoryPage = () => (
-  <div className="p-8">
-    <h1 className="text-4xl font-bold mb-2" style={{ fontFamily: 'Chivo, sans-serif' }}>
-      Campaign History
-    </h1>
-    <p className="text-muted-foreground">View your past campaigns and their performance</p>
-    <div className="mt-8 bg-[#1C1C1C] border border-[#2E2E2E] rounded-lg p-12 text-center">
-      <p className="text-muted-foreground">History feature coming soon</p>
-    </div>
-  </div>
-);
 
 const SettingsPage = () => (
   <div className="p-8">
@@ -92,7 +81,17 @@ function App() {
             }
           />
           <Route
-            path="/campaign"
+            path="/shop/:id"
+            element={
+              <ProtectedRoute>
+              <DashboardLayout>
+                <ShopDashboardPage />
+              </DashboardLayout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/campaign/new/:shopId"
             element={
               <ProtectedRoute>
                 <DashboardLayout>
@@ -117,16 +116,6 @@ function App() {
               <ProtectedRoute>
                 <DashboardLayout>
                   <TemplatesPage />
-                </DashboardLayout>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/history"
-            element={
-              <ProtectedRoute>
-                <DashboardLayout>
-                  <HistoryPage />
                 </DashboardLayout>
               </ProtectedRoute>
             }

@@ -117,6 +117,51 @@ class Database:
             await db.campaign_batches.create_index([("priority", 1)])
             await db.campaign_batches.create_index([("campaign_id", 1), ("batch_id", 1), ("user_id", 1)], unique=True)
 
+            # NEW: shops collection
+            await db.shops.create_index([("user_id", 1)])
+            await db.shops.create_index(
+                [("user_id", 1), ("shop_name", 1)],
+                unique=True,
+                name="unique_user_shop_name"
+            )
+            
+            # NEW: product_inventory collection
+            await db.product_inventory.create_index([("shop_id", 1)])
+            await db.product_inventory.create_index([("product_id", 1)])
+            await db.product_inventory.create_index(
+                [("shop_id", 1), ("product_id", 1)],
+                unique=True,
+                name="unique_shop_product"
+            )
+            
+            # NEW: customer_behavior_map collection
+            await db.customer_behavior_map.create_index([("shop_id", 1)])
+            await db.customer_behavior_map.create_index([("customer_id", 1)])
+            await db.customer_behavior_map.create_index(
+                [("shop_id", 1), ("customer_id", 1)],
+                unique=True,
+                name="unique_shop_customer_behavior"
+            )
+
+            # NEW: transactions collection
+            await db.transactions.create_index([("shop_id", 1)])
+            await db.transactions.create_index([("customer_id", 1)])
+            await db.transactions.create_index([("product_id", 1)])
+            await db.transactions.create_index([("purchase_date", -1)])
+            await db.transactions.create_index(
+                [("shop_id", 1), ("customer_id", 1), ("product_id", 1), ("purchase_date", 1)],
+                name="shop_transaction_lookup"
+            )
+
+            # ADDED indexes to Existing Collections for 'Shop-First' paradigm
+            await db.customers.create_index([("shop_id", 1)])
+            await db.campaigns.create_index([("shop_id", 1)])
+            await db.files.create_index([("shop_id", 1)])
+            await db.batches.create_index([("shop_id", 1)])
+            await db.templates.create_index([("shop_id", 1)])
+            await db.messages.create_index([("shop_id", 1)])
+            await db.msg_queues.create_index([("shop_id", 1)])
+
             logger.info("Database indexes created successfully")
         
         except Exception as e:

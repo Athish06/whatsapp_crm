@@ -107,53 +107,125 @@ def classify_customers_rfm(
     df['last_transaction_date'] = df['last_transaction_date'].fillna(today)
     
     # ==== PHASE 1: FEATURE ENGINEERING (Raw Metrics) ====
-    df['recency'] = (today - df['last_transaction_date']).dt.days
-    df['recency'] = df['recency'].clip(lower=0)  # Ensure non-negative
-    df['frequency'] = df['purchase_count']
-    df['monetary'] = df['order_value']
-    df['bulkiness'] = df['total_quantity'] / df['purchase_count']  # Avg items per transaction
-    df['bulkiness'] = df['bulkiness'].fillna(0)
+    # Step 1: Raw Recency (days since last purchase)
+    df['recency_raw'] = (today - df['last_transaction_date']).dt.days
+    df['recency_raw'] = df['recency_raw'].clip(lower=0)  # Ensure non-negative
+    df['recency'] = df['recency_raw']  # alias kept for downstream compatibility
+    df['frequency'] = pd.to_numeric(df['purchase_count'], errors='coerce').fillna(1)
+    df['monetary'] = pd.to_numeric(df['order_value'], errors='coerce').fillna(0)
+    df['monetary_log'] = np.log1p(df['monetary'])  # log(1+x) — dampens whale distortion
+    df['bulkiness'] = (df['total_quantity'] / df['purchase_count']).fillna(0)  # Avg items/txn
     
-    # Calculate store average bulkiness for threshold
+    # Calculate store average bulkiness for waterfall threshold (unchanged)
     store_avg_bulkiness = df['bulkiness'].mean()
     
     # ==== PHASE 2: QUINTILE SCORING (1-5) ====
-    # For Recency: LOWER is BETTER (recent customers score higher)
+    # -----------------------------------------------------------------
+    # RECENCY SCORE — Rank-based Quintile Method
+    #   Step 2: Rank raw recency (lowest days = most recent = lowest rank)
+    #   Step 3: qcut on ranks with reversed labels so:
+    #           Top 20% most recent (lowest rank) → Score 5
+    #           Bottom 20% oldest  (highest rank) → Score 1
+    # This handles ties and small datasets far better than direct qcut.
+    # -----------------------------------------------------------------
+    df['recency_rank'] = df['recency_raw'].rank(method='average')
     try:
-        df['r_score'] = pd.qcut(df['recency'], q=5, labels=[5, 4, 3, 2, 1], duplicates='drop')
-        df['r_score'] = df['r_score'].astype(int)
+        df['r_score'] = pd.qcut(
+            df['recency_rank'],
+            q=5,
+            labels=[5, 4, 3, 2, 1],   # reversed: low rank (recent) → 5
+            duplicates='drop'
+        ).astype(int)
     except (ValueError, TypeError):
-        # Fallback: use percentile-based scoring for small/uniform datasets
-        df['r_score'] = pd.cut(df['recency'], bins=5, labels=[5, 4, 3, 2, 1], duplicates='drop', include_lowest=True)
-        if df['r_score'].isna().all():
-            df['r_score'] = 3  # Default mid-range score
-        else:
-            df['r_score'] = df['r_score'].fillna(3).astype(int)
+        # Fallback for very small / uniform datasets
+        try:
+            df['r_score'] = pd.cut(
+                df['recency_rank'],
+                bins=5,
+                labels=[5, 4, 3, 2, 1],
+                include_lowest=True
+            ).astype(int)
+        except Exception:
+            df['r_score'] = 3  # default mid-range score
     
-    # For Frequency: HIGHER is BETTER
+    # -----------------------------------------------------------------
+    # FREQUENCY SCORE — Rank-based Quintile Method
+    #   Higher purchase_count → higher rank → Score 5
+    # -----------------------------------------------------------------
+    df['f_rank'] = df['frequency'].rank(method='average')
     try:
-        df['f_score'] = pd.qcut(df['frequency'], q=5, labels=[1, 2, 3, 4, 5], duplicates='drop')
-        df['f_score'] = df['f_score'].astype(int)
+        df['f_score'] = pd.qcut(
+            df['f_rank'],
+            q=5,
+            labels=[1, 2, 3, 4, 5],   # high rank (frequent) → 5
+            duplicates='drop'
+        ).astype(int)
     except (ValueError, TypeError):
-        df['f_score'] = pd.cut(df['frequency'], bins=5, labels=[1, 2, 3, 4, 5], duplicates='drop', include_lowest=True)
-        if df['f_score'].isna().all():
+        try:
+            df['f_score'] = pd.cut(
+                df['f_rank'],
+                bins=5,
+                labels=[1, 2, 3, 4, 5],
+                include_lowest=True
+            ).astype(int)
+        except Exception:
             df['f_score'] = 3
-        else:
-            df['f_score'] = df['f_score'].fillna(3).astype(int)
-    
-    # For Monetary: HIGHER is BETTER
+
+    # -----------------------------------------------------------------
+    # MONETARY SCORE — Rank-based Quintile Method (log-transformed)
+    #   log1p dampens whale distortion; high spender → Score 5
+    # -----------------------------------------------------------------
+    df['m_rank'] = df['monetary_log'].rank(method='average')
     try:
-        df['m_score'] = pd.qcut(df['monetary'], q=5, labels=[1, 2, 3, 4, 5], duplicates='drop')
-        df['m_score'] = df['m_score'].astype(int)
+        df['m_score'] = pd.qcut(
+            df['m_rank'],
+            q=5,
+            labels=[1, 2, 3, 4, 5],   # high rank (big spender) → 5
+            duplicates='drop'
+        ).astype(int)
     except (ValueError, TypeError):
-        df['m_score'] = pd.cut(df['monetary'], bins=5, labels=[1, 2, 3, 4, 5], duplicates='drop', include_lowest=True)
-        if df['m_score'].isna().all():
+        try:
+            df['m_score'] = pd.cut(
+                df['m_rank'],
+                bins=5,
+                labels=[1, 2, 3, 4, 5],
+                include_lowest=True
+            ).astype(int)
+        except Exception:
             df['m_score'] = 3
-        else:
-            df['m_score'] = df['m_score'].fillna(3).astype(int)
+
+    # -----------------------------------------------------------------
+    # BULKINESS SCORE — Rank-based Quintile Method
+    #   Higher avg basket size → higher rank → Score 5
+    # -----------------------------------------------------------------
+    df['b_rank'] = df['bulkiness'].rank(method='average')
+    try:
+        df['b_score'] = pd.qcut(
+            df['b_rank'],
+            q=5,
+            labels=[1, 2, 3, 4, 5],   # high rank (bulk buyer) → 5
+            duplicates='drop'
+        ).astype(int)
+    except (ValueError, TypeError):
+        try:
+            df['b_score'] = pd.cut(
+                df['b_rank'],
+                bins=5,
+                labels=[1, 2, 3, 4, 5],
+                include_lowest=True
+            ).astype(int)
+        except Exception:
+            df['b_score'] = 3
+
+    # Force all scores to int (guards against NaN edge-cases)
+    df['r_score'] = pd.to_numeric(df['r_score'], errors='coerce').fillna(3).astype(int)
+    df['f_score'] = pd.to_numeric(df['f_score'], errors='coerce').fillna(3).astype(int)
+    df['m_score'] = pd.to_numeric(df['m_score'], errors='coerce').fillna(3).astype(int)
+    df['b_score'] = pd.to_numeric(df['b_score'], errors='coerce').fillna(3).astype(int)
     
     # Calculate Total RFM Score
     df['rfm_score'] = df['r_score'] + df['f_score'] + df['m_score']
+    df['rfm_score'] = pd.to_numeric(df['rfm_score'], errors='coerce').fillna(9).astype(int)
     
     # ==== PHASE 3: 5-TIER WATERFALL DECISION TREE ====
     def apply_waterfall_segmentation(row):

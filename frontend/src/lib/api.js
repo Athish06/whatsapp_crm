@@ -27,6 +27,22 @@ export const dashboardAPI = {
   getStats: () => api.get('/dashboard/stats'),
 };
 
+// API endpoints for shops
+export const shopsAPI = {
+  create: (shop_name) => api.post('/shops/create', { shop_name }),
+  list: () => api.get('/shops/list'),
+  getDetail: (shopId) => api.get(`/shops/${shopId}`),
+  deleteCampaign: (shopId) => api.delete(`/shops/${shopId}/campaign`),
+  deleteShop: (shopId) => api.delete(`/shops/${shopId}`),
+  upload: (shopId, dataType, file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post(`/shops/${shopId}/upload/${dataType}`, formData);
+  },
+  process: (shopId, dataType, fileId, data) =>
+    api.post(`/shops/${shopId}/process/${dataType}/${fileId}`, data),
+};
+
 // API endpoints for customers
 export const customersAPI = {
   upload: (file, campaignId = null) => {
@@ -53,16 +69,17 @@ export const customersAPI = {
     return api.post('/customers/upload-with-mapping', formData);
   },
   processWithMapping: (fileId, data) => api.post(`/customers/process-file/${fileId}`, data),
-  list: () => api.get('/customers/list'),
-  clear: () => api.delete('/customers/clear'),
+  list: (shopId = null) => api.get('/customers/list', { params: shopId ? { shop_id: shopId } : {} }),
+  clear: (shopId = null) => api.delete('/customers/clear', { params: shopId ? { shop_id: shopId } : {} }),
   getByFile: (fileId) => api.get(`/customers/by-file/${fileId}`),
 };
 
 // API endpoints for templates
 export const templatesAPI = {
   create: (data) => api.post('/templates/create', data),
-  list: () => api.get('/templates/list'),
+  list: (shopId = null) => api.get('/templates/list', { params: shopId ? { shop_id: shopId } : {} }),
   get: (id) => api.get(`/templates/${id}`),
+  update: (id, data) => api.put(`/templates/${id}`, data),
   delete: (id) => api.delete(`/templates/${id}`),
 };
 
@@ -73,6 +90,8 @@ export const batchesAPI = {
   }),
   create: (data) => api.post('/batches/create', data),
   list: () => api.get('/batches/list'),
+  campaignsList: () => api.get('/batches/campaigns/list'),
+  stopCampaign: (campaignId) => api.post(`/batches/campaigns/${campaignId}/stop`),
   reschedule: (id) => api.post(`/batches/${id}/reschedule`),
   pause: (id) => api.post(`/batches/${id}/pause`),
   resume: (id) => api.post(`/batches/${id}/resume`),

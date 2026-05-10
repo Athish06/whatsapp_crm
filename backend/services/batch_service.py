@@ -81,20 +81,23 @@ class BatchService:
     
     @staticmethod
     def estimate_batch_split(
-        total_customers: int, 
-        batch_size: int
+        total_customers: int,
+        batch_size: int,
+        cooldown_seconds: int = 30,
     ) -> Dict[str, Any]:
-        """Estimate batch splitting metrics."""
+        """Estimate batch splitting metrics with smart-delay math."""
         total_batches = math.ceil(total_customers / batch_size)
-        split_time_seconds = total_customers * 0.01
-        estimated_completion_minutes = (total_customers * 2) / 60
-        
+        # Each batch takes ~(batch_size * 1.5s send) + cooldown between batches
+        batch_send_seconds = batch_size * 1.5
+        total_seconds = (batch_send_seconds * total_batches) + (cooldown_seconds * (total_batches - 1))
+        estimated_completion_minutes = round(total_seconds / 60, 1)
+
         return {
             "total_customers": total_customers,
             "batch_size": batch_size,
             "total_batches": total_batches,
-            "split_time_seconds": round(split_time_seconds, 2),
-            "estimated_completion_minutes": round(estimated_completion_minutes, 2)
+            "cooldown_seconds": cooldown_seconds,
+            "estimated_completion_minutes": estimated_completion_minutes,
         }
     
     async def create_batch(
@@ -108,12 +111,19 @@ class BatchService:
         segment_templates: Dict[str, str] = None,
         campaign_name: str = None,
         file_id: str = None,
+        shop_id: str = None,
+        ai_mode: bool = False,
+        fixed_product: str = None,
     ) -> Dict[str, Any]:
         """Create batch campaign with messages.
         
         Supports two modes:
         1. Single template (template_id): All customers get the same template
         2. Segment-based (segment_templates): Different templates for different segments
+        
+        AI mode: If ai_mode=True, looks up customer_behavior_map for each customer
+        to fill {{offer_product_1}} with their favorite item.
+        If fixed_product is set, uses that for {{fixed_product}} in all messages.
         """
         # Validate at least one template approach is provided
         if not template_id and not segment_templates:
@@ -160,7 +170,10 @@ class BatchService:
                 "_id": campaign_id,
                 "campaign_name": campaign_name or f"Campaign {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}",
                 "user_id": user_id,
+                "shop_id": shop_id,
                 "file_id": file_id,
+                "ai_mode": ai_mode,
+                "fixed_product": fixed_product,
                 "status": "pending",
                 "total_customers": len(customers),
                 "total_batches": math.ceil(len(customers) / batch_size),
@@ -171,6 +184,15 @@ class BatchService:
                 "updated_at": datetime.now(timezone.utc),
             }
             await self.db.campaigns.insert_one(campaign_doc)
+
+        # Load behavior maps if AI mode is on
+        behavior_map = {}
+        if ai_mode and shop_id:
+            behavior_cursor = self.db.customer_behavior_map.find(
+                {"shop_id": shop_id}, {"_id": 0}
+            )
+            async for bm in behavior_cursor:
+                behavior_map[bm["customer_id"]] = bm
         
         # Split into batches
         total_batches = math.ceil(len(customers) / batch_size)
@@ -187,6 +209,7 @@ class BatchService:
                 "campaign_id": campaign_id,
                 "campaign_name": campaign_name,
                 "file_id": file_id,
+                "shop_id": shop_id,
                 "user_id": user_id,
                 "batch_number": i + 1,
                 "total_batches": total_batches,
@@ -233,6 +256,22 @@ class BatchService:
                     customer_template_id = template_id
                 
                 message_content = prepare_message(customer_template["content"], customer)
+                
+                # AI mode: inject offer_product_1 from behavior map
+                if ai_mode and shop_id:
+                    cust_phone = customer.get("phone", "")
+                    cust_behavior = behavior_map.get(cust_phone) or behavior_map.get(customer.get("id", ""))
+                    if cust_behavior and cust_behavior.get("fav_items"):
+                        offer_product = cust_behavior["fav_items"][0].get("product_name", "")
+                        message_content = message_content.replace("{{offer_product_1}}", offer_product)
+                        message_content = message_content.replace("{{favorite_item}}", offer_product)
+                    else:
+                        message_content = message_content.replace("{{offer_product_1}}", fixed_product or "")
+                        message_content = message_content.replace("{{favorite_item}}", fixed_product or "")
+                
+                # Fixed product mode
+                if fixed_product:
+                    message_content = message_content.replace("{{fixed_product}}", fixed_product)
                 
                 # Map segment to priority - Hybrid RFM+B Intelligence
                 segment_priority_map = {
@@ -360,47 +399,75 @@ class BatchService:
         
         return True
     
-    async def process_pending_batches(self, user_id: str):
-        """Background task to process pending batches."""
-        await asyncio.sleep(2)  # Initial delay
-        
+    async def stop_campaign(self, campaign_id: str, user_id: str) -> Dict[str, Any]:
+        """Emergency stop: cancel all pending/paused queue items for a campaign.
+        The batch currently sending will finish naturally; all future batches are cancelled.
+        """
+        # Mark all pending batches as cancelled
+        batch_result = await self.db.batches.update_many(
+            {"campaign_id": campaign_id, "user_id": user_id,
+             "status": {"$in": [BatchStatus.PENDING.value, BatchStatus.PAUSED.value]}},
+            {"$set": {"status": "cancelled", "updated_at": datetime.now(timezone.utc).isoformat()}}
+        )
+        # Cancel pending queue items
+        queue_result = await self.db.msg_queues.update_many(
+            {"campaign_id": campaign_id, "user_id": user_id, "status": "pending"},
+            {"$set": {"status": "cancelled", "updated_at": datetime.now(timezone.utc).isoformat()}}
+        )
+        # Mark pending messages as cancelled
+        msg_result = await self.db.messages.update_many(
+            {"user_id": user_id, "status": MessageStatus.PENDING.value,
+             "batch_id": {"$in": [b["id"] async for b in self.db.batches.find(
+                 {"campaign_id": campaign_id, "user_id": user_id}, {"_id": 0, "id": 1}
+             )]}},
+            {"$set": {"status": "cancelled"}}
+        )
+        await self.db.campaigns.update_one(
+            {"_id": campaign_id, "user_id": user_id},
+            {"$set": {"status": "stopped", "updated_at": datetime.now(timezone.utc)}}
+        )
+        return {
+            "message": "Campaign stopped. Current batch will finish; future batches cancelled.",
+            "batches_cancelled": batch_result.modified_count,
+            "queue_cancelled": queue_result.modified_count,
+        }
+
+    async def process_pending_batches(self, user_id: str, cooldown_seconds: int = 30):
+        """Background task: process pending batches sequentially with smart cooldown."""
+        await asyncio.sleep(2)  # Let the HTTP response return first
+
         while True:
-            # Get next pending batch
+            # Next pending batch ordered by priority ASC then created_at ASC
             batch = await self.db.batches.find_one(
                 {"user_id": user_id, "status": BatchStatus.PENDING.value},
-                {"_id": 0}
+                {"_id": 0},
+                sort=[("priority", 1), ("created_at", 1)]
             )
-            
             if not batch:
                 break
-            
-            # Update batch status to sending
+
+            # Mark as sending
             await self.db.batches.update_one(
                 {"id": batch["id"]},
-                {"$set": {"status": BatchStatus.SENDING.value}}
+                {"$set": {"status": BatchStatus.SENDING.value,
+                          "started_at": datetime.now(timezone.utc).isoformat()}}
             )
             await self._sync_campaign_batch_from_batch(batch["id"], user_id)
-            
-            # Get messages for this batch
+
+            # Fetch pending queue items for this batch
             queue_items = await self.db.msg_queues.find(
                 {"batch_id": batch["id"], "user_id": user_id, "status": "pending"},
                 {"_id": 0, "message_id": 1, "priority": 1, "scheduled_at": 1}
-            ).sort([
-                ("priority", 1),
-                ("scheduled_at", 1)
-            ]).to_list(10000)
+            ).sort([("priority", 1), ("scheduled_at", 1)]).to_list(10000)
 
-            message_ids = [q.get("message_id") for q in queue_items if q.get("message_id")]
+            message_ids = [q["message_id"] for q in queue_items if q.get("message_id")]
+
             if not message_ids:
                 await self.db.batches.update_one(
                     {"id": batch["id"]},
-                    {
-                        "$set": {
-                            "status": BatchStatus.COMPLETED.value,
-                            "pending_count": 0,
-                            "completed_at": datetime.now(timezone.utc).isoformat(),
-                        }
-                    }
+                    {"$set": {"status": BatchStatus.COMPLETED.value,
+                              "pending_count": 0,
+                              "completed_at": datetime.now(timezone.utc).isoformat()}}
                 )
                 await self._sync_campaign_batch_from_batch(batch["id"], user_id)
                 if batch.get("campaign_id"):
@@ -411,69 +478,68 @@ class BatchService:
                 {"id": {"$in": message_ids}, "status": MessageStatus.PENDING.value},
                 {"_id": 0}
             ).to_list(10000)
-            message_map = {m["id"]: m for m in raw_messages if m.get("id")}
+            message_map = {m["id"]: m for m in raw_messages}
             messages = [message_map[mid] for mid in message_ids if mid in message_map]
-            
+
             success_count = 0
             failed_count = 0
-            
+
             for message in messages:
+                # Check if this batch was cancelled mid-flight
+                fresh_batch = await self.db.batches.find_one(
+                    {"id": batch["id"]}, {"_id": 0, "status": 1}
+                )
+                if fresh_batch and fresh_batch.get("status") == "cancelled":
+                    break
+
                 await self.db.msg_queues.update_one(
                     {"message_id": message["id"], "user_id": user_id},
-                    {"$set": {"status": "processing", "updated_at": datetime.now(timezone.utc).isoformat()}}
+                    {"$set": {"status": "processing",
+                              "updated_at": datetime.now(timezone.utc).isoformat()}}
                 )
-                # Simulate sending with delay
-                await asyncio.sleep(1.5)
-                
-                # Simulate 95% success rate
+                await asyncio.sleep(1.5)  # Simulate 1.5s per message
+
                 if random.random() < 0.95:
                     await self.db.messages.update_one(
                         {"id": message["id"]},
-                        {
-                            "$set": {
-                                "status": MessageStatus.SENT.value,
-                                "sent_at": datetime.now(timezone.utc).isoformat()
-                            }
-                        }
+                        {"$set": {"status": MessageStatus.SENT.value,
+                                  "sent_at": datetime.now(timezone.utc).isoformat()}}
                     )
-                    await self.db.msg_queues.delete_one({"message_id": message["id"], "user_id": user_id})
+                    await self.db.msg_queues.delete_one(
+                        {"message_id": message["id"], "user_id": user_id}
+                    )
                     success_count += 1
                 else:
                     await self.db.messages.update_one(
                         {"id": message["id"]},
-                        {
-                            "$set": {
-                                "status": MessageStatus.FAILED.value,
-                                "error": "Network timeout"
-                            }
-                        }
+                        {"$set": {"status": MessageStatus.FAILED.value,
+                                  "error": "Network timeout"}}
                     )
-                    await self.db.msg_queues.delete_one({"message_id": message["id"], "user_id": user_id})
+                    await self.db.msg_queues.delete_one(
+                        {"message_id": message["id"], "user_id": user_id}
+                    )
                     failed_count += 1
-            
-            # Update batch status
-            final_status = (
-                BatchStatus.FAILED.value 
-                if failed_count > 0 
-                else BatchStatus.COMPLETED.value
-            )
+
+            final_status = BatchStatus.COMPLETED.value if failed_count == 0 else BatchStatus.FAILED.value
             await self.db.batches.update_one(
                 {"id": batch["id"]},
-                {
-                    "$set": {
-                        "status": final_status,
-                        "success_count": success_count,
-                        "failed_count": failed_count,
-                        "pending_count": 0,
-                        "completed_at": datetime.now(timezone.utc).isoformat()
-                    }
-                }
+                {"$set": {"status": final_status,
+                          "success_count": success_count,
+                          "failed_count": failed_count,
+                          "pending_count": 0,
+                          "completed_at": datetime.now(timezone.utc).isoformat()}}
             )
             await self._sync_campaign_batch_from_batch(batch["id"], user_id)
-            
-            # Update campaign stats if batch is part of a campaign
             if batch.get("campaign_id"):
                 await self._update_campaign_stats(batch["campaign_id"])
+
+            # ── Smart Cooldown (Train Station delay) ────────────────────────
+            # Check if there are more pending batches; if so, wait before next
+            more = await self.db.batches.count_documents(
+                {"user_id": user_id, "status": BatchStatus.PENDING.value}
+            )
+            if more > 0:
+                await asyncio.sleep(cooldown_seconds)
     
     async def clear_all_batches(self, user_id: str) -> Dict[str, Any]:
         """Clear all batches and messages for a user."""
@@ -664,32 +730,63 @@ class BatchService:
         }
     
     async def _update_campaign_stats(self, campaign_id: str):
-        """Update campaign statistics after batch completion."""
-        # Get all batches for this campaign
-        batches = await self.db.batches.find({"campaign_id": campaign_id}).to_list(1000)
-        
-        completed_batches = sum(1 for b in batches if b["status"] in ["completed", "failed"])
+        """Update campaign statistics with per-segment breakdown."""
+        batches = await self.db.batches.find({"campaign_id": campaign_id}, {"_id": 0}).to_list(1000)
+        if not batches:
+            return
+
+        completed_batches = sum(1 for b in batches if b["status"] in ["completed", "failed", "cancelled"])
         total_sent = sum(b.get("success_count", 0) for b in batches)
         total_failed = sum(b.get("failed_count", 0) for b in batches)
-        
-        # Determine campaign status
-        if completed_batches == len(batches):
+        total_customers = sum(b.get("customer_count", 0) for b in batches)
+
+        # Per-segment aggregation from message records
+        segment_pipeline = [
+            {"$match": {"batch_id": {"$in": [b["id"] for b in batches]}}},
+            {"$group": {
+                "_id": "$customer_segment",
+                "total": {"$sum": 1},
+                "sent": {"$sum": {"$cond": [{"$in": ["$status", ["sent", "delivered"]]}, 1, 0]}},
+                "failed": {"$sum": {"$cond": [{"$eq": ["$status", "failed"]}, 1, 0]}},
+            }}
+        ]
+        seg_cursor = self.db.messages.aggregate(segment_pipeline)
+        segment_stats = {}
+        async for doc in seg_cursor:
+            seg = doc["_id"] or "boring"
+            # How many batches of this segment
+            seg_batches = [b for b in batches if any(
+                True for _ in [0]  # placeholder — we compute below
+            )]
+            segment_stats[seg] = {
+                "total": doc["total"],
+                "sent": doc["sent"],
+                "failed": doc["failed"],
+                "pct": round(doc["sent"] / doc["total"] * 100, 1) if doc["total"] > 0 else 0,
+            }
+
+        all_statuses = {b["status"] for b in batches}
+        if all_statuses <= {"completed", "failed", "cancelled"}:
             status = "completed"
+        elif "sending" in all_statuses or "in_progress" in all_statuses:
+            status = "sending"
         elif completed_batches > 0:
             status = "in_progress"
+        elif "stopped" in all_statuses or "cancelled" in all_statuses:
+            status = "stopped"
         else:
             status = "pending"
-        
-        # Update campaign document
+
         await self.db.campaigns.update_one(
             {"_id": campaign_id},
-            {
-                "$set": {
-                    "status": status,
-                    "completed_batches": completed_batches,
-                    "messages_sent": total_sent,
-                    "messages_failed": total_failed,
-                    "updated_at": datetime.now(timezone.utc)
-                }
-            }
+            {"$set": {
+                "status": status,
+                "completed_batches": completed_batches,
+                "total_batches": len(batches),
+                "total_customers": total_customers,
+                "messages_sent": total_sent,
+                "messages_failed": total_failed,
+                "segment_stats": segment_stats,
+                "updated_at": datetime.now(timezone.utc),
+            }}
         )

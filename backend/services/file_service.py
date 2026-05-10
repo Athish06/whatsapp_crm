@@ -93,6 +93,7 @@ class FileUploadService:
         file: UploadFile,
         user_id: str,
         db: AsyncIOMotorDatabase,
+        shop_id: Optional[str] = None,
         data_purpose: str = "customer_summary",
         linked_customer_file_id: str = None,
         campaign_id: str = None,
@@ -134,11 +135,14 @@ class FileUploadService:
             logger.info(f"Uploading file: {file.filename} ({file_size} bytes) for user {user_id}")
             
             # Check for duplicate file upload
-            existing_file = await db.files.find_one({
+            existing_file_filter = {
                 "user_id": user_id,
                 "original_file_name": file.filename,
                 "file_size": file_size
-            })
+            }
+            if shop_id:
+                existing_file_filter["shop_id"] = shop_id
+            existing_file = await db.files.find_one(existing_file_filter)
             
             if existing_file:
                 logger.warning(f"Duplicate file detected: {file.filename} already uploaded by user {user_id}")
@@ -179,6 +183,7 @@ class FileUploadService:
             # Prepare metadata for MongoDB
             file_metadata = {
                 "user_id": user_id,
+                "shop_id": shop_id,
                 "file_name": unique_filename,
                 "original_file_name": file.filename,
                 "file_url": file_url,

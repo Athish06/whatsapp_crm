@@ -1,347 +1,408 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { templatesAPI } from '../lib/api';
-import { Plus, Trash2, FileText, X, Crown, AlertTriangle, Package, Zap, User, Users } from 'lucide-react';
+import { Plus, Trash2, FileText, X, Crown, AlertTriangle, Package, Zap, User, Users, Copy, Edit2, Eye, ChevronDown, ChevronUp, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 
-const TemplatesPage = () => {
-  const [templates, setTemplates] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [showCreateForm, setShowCreateForm] = useState(false);
-  const [newTemplate, setNewTemplate] = useState({ name: '', content: '', segment: 'all' });
-  const [creating, setCreating] = useState(false);
-  const [filterSegment, setFilterSegment] = useState('all');
+/* ── 8 Smart Variables ── */
+const SMART_VARS = [
+  { key: 'customer_name',                  label: 'Customer Name',                   example: 'Rahul Menon',          color: '#3ECF8E', desc: "Customer's full name" },
+  { key: 'segment',                        label: 'Segment',                          example: 'VIP',                  color: '#F59E0B', desc: 'RFM segment (VIP, At-Risk…)' },
+  { key: 'favorite_category',             label: 'Favorite Category',               example: 'Cosmetics',            color: '#8B5CF6', desc: 'Top category by weighted affinity' },
+  { key: 'favorite_premium_product',      label: 'Favorite Premium Product',        example: "L'Oréal Serum",        color: '#EC4899', desc: 'Top premium product in fav category' },
+  { key: 'favorite_bulk_product',         label: 'Favorite Bulk Product',           example: 'Rice 5kg',             color: '#3B82F6', desc: 'Top bulk product by quantity' },
+  { key: 'second_favorite_premium_product', label: '2nd Premium Product',           example: 'Maybelline Lipstick',  color: '#06B6D4', desc: 'Second highest premium product' },
+  { key: 'recently_bought_product',       label: 'Recently Bought',                 example: 'Dove Soap',            color: '#10B981', desc: 'Most recent product bought' },
+  { key: 'complementary_product',         label: 'Complementary Product',           example: 'Shampoo',              color: '#F97316', desc: 'Frequently bought alongside top product' },
+];
 
-  // Segment configuration - Hybrid RFM+B Intelligence
-  const segments = [
-    { value: 'all', label: 'All Customers', icon: Users, color: 'gray' },
-    { value: 'vip', label: 'VIP Champions', icon: Crown, color: 'yellow' },
-    { value: 'at_risk', label: 'At-Risk', icon: AlertTriangle, color: 'red' },
-    { value: 'potential_bulk', label: 'Potential (Bulk)', icon: Package, color: 'purple' },
-    { value: 'loyal_frequent', label: 'Loyal (Frequent)', icon: Zap, color: 'blue' },
-    { value: 'boring', label: 'Boring', icon: User, color: 'slate' }
-  ];
+/* ── Quick starter templates ── */
+const QUICK_TEMPLATES = [
+  { name: 'VIP Exclusive Offer', segment: 'vip',
+    content: `Hi {{customer_name}} 👑\n\nAs one of our VIP Champions, you deserve the best!\n\nYour favourite pick: *{{favorite_premium_product}}*\n\nWe have an exclusive offer waiting for you in {{favorite_category}}. Don't miss it! 🎁\n\nReply YES to know more.` },
+  { name: 'Win-Back At-Risk', segment: 'at_risk',
+    content: `Hi {{customer_name}}, we miss you! 😢\n\nIt's been a while. We noticed you loved *{{recently_bought_product}}* — and we have something even better now.\n\nCome back today and enjoy a special discount just for you!\n\nReply BACK to claim your offer.` },
+  { name: 'Bulk Buyer Deal', segment: 'potential_bulk',
+    content: `Hello {{customer_name}}! 📦\n\nWe know you love buying in bulk — your top pick *{{favorite_bulk_product}}* is now available at a special rate!\n\nStock up and save more. Reply BULK to see the offer.` },
+  { name: 'Loyalty Reward', segment: 'loyal_frequent',
+    content: `Hi {{customer_name}} ⚡\n\nYou're one of our most loyal customers and we appreciate that!\n\nAs a {{segment}} member, you get early access to new arrivals in *{{favorite_category}}*.\n\nPair *{{favorite_premium_product}}* with *{{complementary_product}}* for a complete experience!` },
+];
 
-  const getSegmentConfig = (segmentValue) => {
-    return segments.find(s => s.value === segmentValue) || segments[0];
+const segments = [
+  { value: 'all',            label: 'All',            icon: Users,         color: '#6B7280' },
+  { value: 'vip',            label: 'VIP',            icon: Crown,         color: '#F59E0B' },
+  { value: 'at_risk',        label: 'At-Risk',        icon: AlertTriangle, color: '#EF4444' },
+  { value: 'potential_bulk', label: 'Bulk',           icon: Package,       color: '#8B5CF6' },
+  { value: 'loyal_frequent', label: 'Loyal',          icon: Zap,           color: '#3B82F6' },
+  { value: 'boring',         label: 'Boring',         icon: User,          color: '#6B7280' },
+];
+
+/* ── Live WhatsApp Preview ── */
+const WhatsAppPreview = ({ content }) => {
+  let preview = content || '';
+  SMART_VARS.forEach(v => {
+    preview = preview.replace(new RegExp(`\\{\\{${v.key}\\}\\}`, 'g'), `*${v.example}*`);
+  });
+  // Bold markdown
+  preview = preview.split('\n').map((line, i) => {
+    const parts = line.split(/(\*[^*]+\*)/g);
+    return (
+      <span key={i}>
+        {parts.map((p, j) =>
+          p.startsWith('*') && p.endsWith('*')
+            ? <strong key={j}>{p.slice(1, -1)}</strong>
+            : p
+        )}
+        <br />
+      </span>
+    );
+  });
+  return (
+    <div className="bg-[#0B141A] rounded-xl p-4 border border-[#2E2E2E]" style={{
+      backgroundImage: "url(\"data:image/svg+xml,%3Csvg width='40' height='40' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 38.59l2.83-2.83 1.41 1.41L1.41 40H0v-1.41z' fill='%231a2c38' fill-opacity='0.4'/%3E%3C/svg%3E\")"
+    }}>
+      <div className="max-w-[280px]">
+        <div className="relative bg-[#005C4B] text-white text-sm px-4 py-3 rounded-xl rounded-tl-sm shadow-lg" style={{ whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+          {preview.length > 0 ? preview : <span className="text-white/40 italic">Start typing to preview…</span>}
+          <div className="text-[10px] text-white/50 text-right mt-1">Preview ✓✓</div>
+          <div className="absolute top-0 -left-2 w-0 h-0 border-t-[10px] border-t-[#005C4B] border-l-[10px] border-l-transparent" />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/* ── Template Form ── */
+const TemplateForm = ({ initial, onSave, onCancel, saving }) => {
+  const [form, setForm] = useState(initial || { name: '', content: '', segment: 'all' });
+  const [showPreview, setShowPreview] = useState(true);
+  const textareaRef = useRef(null);
+
+  const insertVar = (key) => {
+    const ta = textareaRef.current;
+    if (!ta) { setForm(f => ({ ...f, content: f.content + `{{${key}}}` })); return; }
+    const s = ta.selectionStart, e = ta.selectionEnd;
+    const next = form.content.substring(0, s) + `{{${key}}}` + form.content.substring(e);
+    setForm(f => ({ ...f, content: next }));
+    setTimeout(() => { ta.focus(); ta.setSelectionRange(s + key.length + 4, s + key.length + 4); }, 0);
   };
-
-  const getSegmentColors = (color) => {
-    const colors = {
-      gray: { bg: 'bg-gray-500/10', text: 'text-gray-400', border: 'border-gray-500/30' },
-      yellow: { bg: 'bg-yellow-500/10', text: 'text-yellow-400', border: 'border-yellow-500/30' },
-      red: { bg: 'bg-red-500/10', text: 'text-red-400', border: 'border-red-500/30' },
-      purple: { bg: 'bg-purple-500/10', text: 'text-purple-400', border: 'border-purple-500/30' },
-      blue: { bg: 'bg-blue-500/10', text: 'text-blue-400', border: 'border-blue-500/30' },
-      slate: { bg: 'bg-slate-500/10', text: 'text-slate-400', border: 'border-slate-500/30' }
-    };
-    return colors[color] || colors.gray;
-  };
-
-  useEffect(() => {
-    loadTemplates();
-  }, []);
-
-  const loadTemplates = async () => {
-    try {
-      const response = await templatesAPI.list();
-      setTemplates(response.data.templates);
-    } catch (error) {
-      toast.error('Failed to load templates');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleDelete = async (id, event) => {
-    event.stopPropagation();
-    if (!window.confirm('Are you sure you want to delete this template?')) return;
-    
-    try {
-      await templatesAPI.delete(id);
-      toast.success('Template deleted');
-      await loadTemplates();
-    } catch (error) {
-      toast.error('Failed to delete template');
-    }
-  };
-
-  const handleCreateTemplate = async () => {
-    if (!newTemplate.name || !newTemplate.content) {
-      toast.error('Please fill in template name and content');
-      return;
-    }
-
-    try {
-      setCreating(true);
-      await templatesAPI.create({
-        name: newTemplate.name,
-        content: newTemplate.content,
-        segment: newTemplate.segment,
-        placeholders: []
-      });
-      toast.success('Template created successfully');
-      setNewTemplate({ name: '', content: '', segment: 'all' });
-      setShowCreateForm(false);
-      await loadTemplates();
-    } catch (error) {
-      toast.error('Failed to create template');
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const insertPlaceholder = (placeholder) => {
-    const textarea = document.querySelector('[data-testid="new-template-content"]');
-    if (textarea) {
-      const cursorPos = textarea.selectionStart;
-      const textBefore = newTemplate.content.substring(0, cursorPos);
-      const textAfter = newTemplate.content.substring(cursorPos);
-      const newContent = textBefore + `{{${placeholder}}}` + textAfter;
-      setNewTemplate({ ...newTemplate, content: newContent });
-    } else {
-      setNewTemplate({ ...newTemplate, content: newTemplate.content + `{{${placeholder}}}` });
-    }
-  };
-
-  // Filter templates based on selected segment
-  const filteredTemplates = filterSegment === 'all' 
-    ? templates 
-    : templates.filter(t => t.segment === filterSegment || t.segment === 'all');
 
   return (
-    <div className="p-8 space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* Left: Form */}
+      <div className="lg:col-span-2 space-y-5 bg-[#1C1C1C] border border-[#3ECF8E]/50 rounded-xl p-6">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-bold" style={{ fontFamily: 'Chivo, sans-serif' }}>
+            {initial?.id ? 'Edit Template' : 'New Template'}
+          </h2>
+          <button onClick={onCancel} className="p-1.5 hover:bg-[#2E2E2E] rounded-md transition-colors">
+            <X className="w-5 h-5 text-muted-foreground" />
+          </button>
+        </div>
+
+        {/* Name */}
         <div>
-          <h1 className="text-4xl font-bold mb-2" style={{ fontFamily: 'Chivo, sans-serif' }}>
-            Message Templates
-          </h1>
-          <p className="text-muted-foreground">
-            Manage your WhatsApp message templates
-          </p>
+          <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">Template Name</label>
+          <input
+            value={form.name}
+            onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+            placeholder="e.g., Pongal VIP Offer"
+            className="w-full bg-[#121212] border border-[#2E2E2E] focus:border-[#3ECF8E] rounded-lg px-3 py-2.5 text-sm outline-none transition-colors"
+          />
+        </div>
+
+        {/* Segment */}
+        <div>
+          <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">Target Segment</label>
+          <div className="flex flex-wrap gap-2">
+            {segments.map(seg => {
+              const Icon = seg.icon;
+              const active = form.segment === seg.value;
+              return (
+                <button key={seg.value} onClick={() => setForm(f => ({ ...f, segment: seg.value }))}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all ${active ? 'border-current' : 'border-[#2E2E2E] text-muted-foreground hover:border-[#3E3E3E]'}`}
+                  style={active ? { color: seg.color, borderColor: seg.color, backgroundColor: seg.color + '18' } : {}}>
+                  <Icon className="w-3.5 h-3.5" />{seg.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Content */}
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Message Content</label>
+            <button onClick={() => setShowPreview(p => !p)}
+              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-white transition-colors">
+              <Eye className="w-3.5 h-3.5" />{showPreview ? 'Hide' : 'Show'} Preview
+            </button>
+          </div>
+          <textarea ref={textareaRef} value={form.content}
+            onChange={e => setForm(f => ({ ...f, content: e.target.value }))}
+            placeholder="Hi {{customer_name}}, we have something special for you…"
+            rows={8}
+            className="w-full bg-[#121212] border border-[#2E2E2E] focus:border-[#3ECF8E] rounded-lg p-3 text-sm outline-none resize-none transition-colors font-mono"
+          />
+          <p className="text-xs text-muted-foreground mt-1">{form.content.length} chars · Use <code className="text-[#3ECF8E]">{'{{variable}}'}</code> to personalise</p>
+        </div>
+
+        {/* Preview (inline on mobile) */}
+        {showPreview && (
+          <div className="lg:hidden">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Live Preview</p>
+            <WhatsAppPreview content={form.content} />
+          </div>
+        )}
+
+        <div className="flex gap-3 pt-2">
+          <button onClick={onCancel} className="px-5 py-2 text-sm text-muted-foreground hover:text-white border border-[#2E2E2E] rounded-lg transition-colors">Cancel</button>
+          <button onClick={() => onSave(form)} disabled={saving || !form.name || !form.content}
+            className="flex-1 py-2 text-sm bg-[#3ECF8E] text-black font-semibold rounded-lg hover:bg-[#32B37A] disabled:opacity-40 transition-colors">
+            {saving ? 'Saving…' : initial?.id ? 'Save Changes' : 'Create Template'}
+          </button>
         </div>
       </div>
 
-      {loading ? (
-        <div className="text-center py-12 text-muted-foreground">Loading templates...</div>
-      ) : (
-        <div className="space-y-6">
-          {/* New Template Form (Modal-like) */}
-          {showCreateForm ? (
-            <div className="bg-[#1C1C1C] border border-[#3ECF8E] rounded-lg p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-semibold" style={{ fontFamily: 'Chivo, sans-serif' }}>
-                  Create New Template
-                </h2>
-                <button
-                  onClick={() => {
-                    setShowCreateForm(false);
-                    setNewTemplate({ name: '', content: '', segment: 'all' });
-                  }}
-                  className="text-muted-foreground hover:text-white transition-colors"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium mb-2">Template Name</label>
-                  <input
-                    type="text"
-                    value={newTemplate.name}
-                    onChange={(e) => setNewTemplate({ ...newTemplate, name: e.target.value })}
-                    placeholder="e.g., Welcome Message"
-                    className="w-full bg-[#121212] border border-[#2E2E2E] focus:border-[#3ECF8E] focus:ring-1 focus:ring-[#3ECF8E] rounded-md h-10 px-3 text-sm outline-none"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium mb-2">Customer Segment</label>
-                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                    {segments.map((segment) => {
-                      const Icon = segment.icon;
-                      const colors = getSegmentColors(segment.color);
-                      const isSelected = newTemplate.segment === segment.value;
-                      
-                      return (
-                        <button
-                          key={segment.value}
-                          type="button"
-                          onClick={() => setNewTemplate({ ...newTemplate, segment: segment.value })}
-                          className={`p-3 rounded-lg border-2 transition-all text-left ${
-                            isSelected
-                              ? `${colors.bg} ${colors.border} ${colors.text}`
-                              : 'bg-[#121212] border-[#2E2E2E] hover:border-[#3E3E3E]'
-                          }`}
-                        >
-                          <Icon className={`w-5 h-5 mb-1 ${isSelected ? colors.text : 'text-muted-foreground'}`} />
-                          <div className={`text-xs font-medium ${isSelected ? colors.text : 'text-muted-foreground'}`}>
-                            {segment.label}
-                          </div>
-                        </button>
-                      );
-                    })}
+      {/* Right: Variable sidebar + preview */}
+      <div className="space-y-4">
+        {/* Variables */}
+        <div className="bg-[#1C1C1C] border border-[#2E2E2E] rounded-xl p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Sparkles className="w-4 h-4 text-[#3ECF8E]" />
+            <span className="text-sm font-semibold">8 Smart Variables</span>
+          </div>
+          <div className="space-y-1.5">
+            {SMART_VARS.map(v => (
+              <div key={v.key} className="group flex items-start gap-2 p-2 rounded-lg hover:bg-[#2E2E2E]/60 transition-colors cursor-pointer"
+                onClick={() => insertVar(v.key)}>
+                <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{ backgroundColor: v.color }} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-1">
+                    <code className="text-xs font-mono" style={{ color: v.color }}>{`{{${v.key}}}`}</code>
+                    <span className="text-[10px] text-[#3ECF8E] opacity-0 group-hover:opacity-100 transition-opacity font-medium">+ Insert</span>
                   </div>
+                  <p className="text-[10px] text-muted-foreground truncate">{v.desc}</p>
+                  <p className="text-[10px] text-white/40 italic">e.g. {v.example}</p>
                 </div>
+              </div>
+            ))}
+          </div>
+        </div>
 
-                <div>
-                  <label className="block text-sm font-medium mb-2">Message Content</label>
-                  <textarea
-                    data-testid="new-template-content"
-                    value={newTemplate.content}
-                    onChange={(e) => setNewTemplate({ ...newTemplate, content: e.target.value })}
-                    placeholder="Hi {{name}}, thanks for your order!"
-                    rows={6}
-                    className="w-full bg-[#121212] border border-[#2E2E2E] focus:border-[#3ECF8E] focus:ring-1 focus:ring-[#3ECF8E] rounded-md p-3 text-sm outline-none resize-none"
-                  />
-                </div>
+        {/* Live preview (desktop) */}
+        {showPreview && (
+          <div className="hidden lg:block">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Live Preview</p>
+            <WhatsAppPreview content={form.content} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
 
-                <div>
-                  <p className="text-sm font-medium mb-2">Insert Placeholders</p>
-                  <div className="flex flex-wrap gap-2">
-                    {['name', 'phone', 'email', 'product_category', 'category'].map((placeholder) => (
-                      <button
-                        key={placeholder}
-                        onClick={() => insertPlaceholder(placeholder)}
-                        className="px-3 py-1 bg-[#121212] border border-[#2E2E2E] rounded-md text-sm hover:border-[#3ECF8E] transition-colors"
-                      >
-                        <Plus className="w-3 h-3 inline mr-1" />
-                        {placeholder}
+/* ── Main Page ── */
+const TemplatesPage = () => {
+  const [templates, setTemplates] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [mode, setMode] = useState('list'); // 'list' | 'create' | 'edit'
+  const [editing, setEditing] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [filter, setFilter] = useState('all');
+  const [showQuick, setShowQuick] = useState(true);
+
+  useEffect(() => { load(); }, []);
+
+  const load = async () => {
+    try { const r = await templatesAPI.list(); setTemplates(r.data.templates || []); }
+    catch { toast.error('Failed to load templates'); }
+    finally { setLoading(false); }
+  };
+
+  const handleSave = async (form) => {
+    setSaving(true);
+    try {
+      if (editing?.id) {
+        // update — try update endpoint, fall back to delete+create
+        try { await templatesAPI.update(editing.id, form); }
+        catch {
+          await templatesAPI.delete(editing.id);
+          await templatesAPI.create({ ...form, placeholders: [] });
+        }
+        toast.success('Template updated');
+      } else {
+        await templatesAPI.create({ ...form, placeholders: [] });
+        toast.success('Template created');
+      }
+      setMode('list'); setEditing(null); await load();
+    } catch { toast.error('Failed to save template'); }
+    finally { setSaving(false); }
+  };
+
+  const handleDelete = async (id, e) => {
+    e.stopPropagation();
+    if (!window.confirm('Delete this template?')) return;
+    try { await templatesAPI.delete(id); toast.success('Deleted'); await load(); }
+    catch { toast.error('Failed to delete'); }
+  };
+
+  const handleDuplicate = async (t, e) => {
+    e.stopPropagation();
+    try {
+      await templatesAPI.create({ name: t.name + ' (Copy)', content: t.content, segment: t.segment, placeholders: [] });
+      toast.success('Duplicated');
+      await load();
+    } catch { toast.error('Failed to duplicate'); }
+  };
+
+  const useQuick = (qt) => {
+    setEditing(null);
+    setMode('create');
+    // pre-fill via editing state trick
+    setEditing({ name: qt.name, content: qt.content, segment: qt.segment });
+  };
+
+  const filtered = filter === 'all' ? templates : templates.filter(t => t.segment === filter || t.segment === 'all');
+  const segMap = Object.fromEntries(segments.map(s => [s.value, s]));
+
+  if (loading) return <div className="p-8 text-center text-muted-foreground animate-pulse">Loading templates…</div>;
+
+  return (
+    <div className="p-8 space-y-8 max-w-7xl mx-auto">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-4xl font-bold mb-1" style={{ fontFamily: 'Chivo, sans-serif' }}>Message Templates</h1>
+          <p className="text-muted-foreground text-sm">{templates.length} templates · 8 smart personalisation variables</p>
+        </div>
+        {mode === 'list' && (
+          <button onClick={() => { setEditing(null); setMode('create'); }}
+            className="flex items-center gap-2 px-5 py-2.5 bg-[#3ECF8E] text-black font-semibold rounded-lg hover:bg-[#32B37A] transition-colors">
+            <Plus className="w-4 h-4" />New Template
+          </button>
+        )}
+      </div>
+
+      {/* Form */}
+      {(mode === 'create' || mode === 'edit') && (
+        <TemplateForm
+          initial={editing}
+          onSave={handleSave}
+          onCancel={() => { setMode('list'); setEditing(null); }}
+          saving={saving}
+        />
+      )}
+
+      {mode === 'list' && (
+        <>
+          {/* Quick Templates */}
+          <div className="bg-[#1C1C1C] border border-[#2E2E2E] rounded-xl overflow-hidden">
+            <button onClick={() => setShowQuick(p => !p)}
+              className="w-full flex items-center justify-between p-4 hover:bg-[#252525] transition-colors">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-[#F59E0B]" />
+                <span className="font-semibold text-sm">Quick Starter Templates</span>
+                <span className="text-xs text-muted-foreground bg-[#2E2E2E] px-2 py-0.5 rounded-full">{QUICK_TEMPLATES.length}</span>
+              </div>
+              {showQuick ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
+            </button>
+            {showQuick && (
+              <div className="border-t border-[#2E2E2E] p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                {QUICK_TEMPLATES.map(qt => {
+                  const seg = segMap[qt.segment] || segMap.all;
+                  const Icon = seg.icon;
+                  return (
+                    <div key={qt.name} className="flex items-start gap-3 bg-[#121212] rounded-lg p-3 border border-[#2E2E2E] hover:border-[#3ECF8E]/40 transition-colors group">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Icon className="w-3.5 h-3.5 flex-shrink-0" style={{ color: seg.color }} />
+                          <span className="text-sm font-medium">{qt.name}</span>
+                        </div>
+                        <p className="text-xs text-muted-foreground line-clamp-2">{qt.content.substring(0, 100)}…</p>
+                      </div>
+                      <button onClick={() => useQuick(qt)}
+                        className="flex-shrink-0 px-3 py-1.5 text-xs font-medium bg-[#3ECF8E]/10 text-[#3ECF8E] border border-[#3ECF8E]/30 rounded-md hover:bg-[#3ECF8E]/20 transition-colors opacity-0 group-hover:opacity-100">
+                        Use
                       </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="flex gap-3">
-                  <button
-                    onClick={() => {
-                      setShowCreateForm(false);
-                      setNewTemplate({ name: '', content: '', segment: 'all' });
-                    }}
-                    className="px-6 py-2 bg-[#2E2E2E] text-white border border-[#3E3E3E] hover:bg-[#3E3E3E] rounded-md transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleCreateTemplate}
-                    disabled={creating}
-                    className="flex-1 px-6 py-2 bg-[#3ECF8E] text-black hover:bg-[#34B27B] font-medium rounded-md shadow-[0_0_10px_rgba(62,207,142,0.2)] transition-all disabled:opacity-50"
-                  >
-                    {creating ? 'Creating...' : 'Create Template'}
-                  </button>
-                </div>
+                    </div>
+                  );
+                })}
               </div>
-            </div>
-          ) : (
-            /* New Template Card */
-            <div 
-              onClick={() => setShowCreateForm(true)}
-              className="bg-gradient-to-br from-[#3ECF8E]/10 to-[#3ECF8E]/5 border-2 border-dashed border-[#3ECF8E] rounded-lg p-8 cursor-pointer hover:border-[#3ECF8E] hover:bg-[#3ECF8E]/10 transition-all group"
-            >
-              <div className="flex items-center gap-4">
-                <div className="w-16 h-16 rounded-full bg-[#3ECF8E] flex items-center justify-center group-hover:scale-110 transition-transform">
-                  <Plus className="w-8 h-8 text-black" />
-                </div>
-                <div>
-                  <h3 className="text-xl font-semibold mb-1">Create New Template</h3>
-                  <p className="text-muted-foreground">Add a new message template for your campaigns</p>
-                </div>
-              </div>
-            </div>
-          )}
+            )}
+          </div>
 
-          {/* Existing Templates */}
+          {/* Filter + list */}
           <div>
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-2xl font-semibold" style={{ fontFamily: 'Chivo, sans-serif' }}>
-                Your Templates
+              <h2 className="text-xl font-bold" style={{ fontFamily: 'Chivo, sans-serif' }}>
+                Your Templates <span className="text-muted-foreground font-normal text-base ml-2">({filtered.length})</span>
               </h2>
-              
-              {/* Segment Filter */}
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-muted-foreground">Filter:</span>
-                <div className="flex gap-2">
-                  {segments.map((segment) => {
-                    const Icon = segment.icon;
-                    const colors = getSegmentColors(segment.color);
-                    const isActive = filterSegment === segment.value;
-                    
-                    return (
-                      <button
-                        key={segment.value}
-                        onClick={() => setFilterSegment(segment.value)}
-                        className={`px-3 py-1.5 rounded-md border transition-all flex items-center gap-1.5 ${
-                          isActive
-                            ? `${colors.bg} ${colors.border} ${colors.text}`
-                            : 'bg-[#121212] border-[#2E2E2E] text-muted-foreground hover:border-[#3E3E3E]'
-                        }`}
-                        title={segment.label}
-                      >
-                        <Icon className="w-4 h-4" />
-                        <span className="text-xs font-medium hidden sm:inline">{segment.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
+              <div className="flex gap-2">
+                {segments.map(seg => {
+                  const Icon = seg.icon;
+                  const active = filter === seg.value;
+                  return (
+                    <button key={seg.value} onClick={() => setFilter(seg.value)}
+                      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-xs font-medium transition-all ${active ? 'border-current' : 'border-[#2E2E2E] text-muted-foreground hover:border-[#3E3E3E]'}`}
+                      style={active ? { color: seg.color, borderColor: seg.color, backgroundColor: seg.color + '18' } : {}}>
+                      <Icon className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">{seg.label}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
-            
-            {filteredTemplates.length === 0 ? (
-              <div className="text-center p-12 bg-[#1C1C1C] border border-[#2E2E2E] rounded-lg">
-                <FileText className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
-                <p className="text-muted-foreground">
-                  {templates.length === 0 ? 'No templates yet' : `No templates for ${getSegmentConfig(filterSegment).label}`}
-                </p>
-                <p className="text-sm text-muted-foreground mt-1">
-                  {templates.length === 0 ? 'Create your first template to get started' : 'Try a different filter'}
-                </p>
+
+            {filtered.length === 0 ? (
+              <div className="text-center py-16 bg-[#1C1C1C] border border-[#2E2E2E] rounded-xl">
+                <FileText className="w-12 h-12 text-[#2E2E2E] mx-auto mb-3" />
+                <p className="text-muted-foreground">{templates.length === 0 ? 'No templates yet — create your first one above!' : 'No templates for this segment'}</p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {filteredTemplates.map((template) => {
-                  const segmentConfig = getSegmentConfig(template.segment || 'all');
-                  const SegmentIcon = segmentConfig.icon;
-                  const colors = getSegmentColors(segmentConfig.color);
-                  
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                {filtered.map(t => {
+                  const seg = segMap[t.segment || 'all'] || segMap.all;
+                  const Icon = seg.icon;
+                  // Extract variables used
+                  const usedVars = SMART_VARS.filter(v => t.content?.includes(`{{${v.key}}}`));
                   return (
-                    <div
-                      key={template.id}
-                      data-testid={`template-card-${template.id}`}
-                      className="bg-[#1C1C1C] border border-[#2E2E2E] rounded-lg p-6 hover:border-[#3ECF8E] transition-all group relative"
-                    >
+                    <div key={t.id} className="bg-[#1C1C1C] border border-[#2E2E2E] rounded-xl p-5 hover:border-[#3ECF8E]/40 transition-all group relative flex flex-col">
+                      {/* Top */}
                       <div className="flex items-start justify-between mb-3">
-                        <div className="flex items-center gap-3 flex-1">
-                          <div className="w-10 h-10 rounded-lg bg-[#3ECF8E]/10 flex items-center justify-center flex-shrink-0">
-                            <FileText className="w-5 h-5 text-[#3ECF8E]" />
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <h3 className="font-semibold truncate">{template.name}</h3>
-                            <div className={`inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded-full border ${colors.bg} ${colors.border} ${colors.text}`}>
-                              <SegmentIcon className="w-3 h-3" />
-                              <span className="text-xs font-medium">{segmentConfig.label}</span>
-                            </div>
-                          </div>
+                        <div className="flex-1 min-w-0">
+                          <h3 className="font-semibold truncate mb-1">{t.name}</h3>
+                          <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full border"
+                            style={{ color: seg.color, borderColor: seg.color + '50', backgroundColor: seg.color + '15' }}>
+                            <Icon className="w-2.5 h-2.5" />{seg.label}
+                          </span>
                         </div>
-                        <button
-                          data-testid={`delete-template-${template.id}`}
-                          onClick={(e) => handleDelete(template.id, e)}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity p-2 hover:bg-red-500/10 rounded-md flex-shrink-0"
-                          title="Delete template"
-                        >
-                          <Trash2 className="w-4 h-4 text-red-400 hover:text-red-300" />
-                        </button>
+                        {/* Actions */}
+                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-2">
+                          <button onClick={() => { setEditing(t); setMode('edit'); }}
+                            className="p-1.5 hover:bg-[#2E2E2E] rounded-md transition-colors" title="Edit">
+                            <Edit2 className="w-3.5 h-3.5 text-muted-foreground hover:text-white" />
+                          </button>
+                          <button onClick={(e) => handleDuplicate(t, e)}
+                            className="p-1.5 hover:bg-[#2E2E2E] rounded-md transition-colors" title="Duplicate">
+                            <Copy className="w-3.5 h-3.5 text-muted-foreground hover:text-white" />
+                          </button>
+                          <button onClick={(e) => handleDelete(t.id, e)}
+                            className="p-1.5 hover:bg-red-500/10 rounded-md transition-colors" title="Delete">
+                            <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                          </button>
+                        </div>
                       </div>
-                      <p className="text-sm text-muted-foreground mb-3 line-clamp-3">
-                        {template.content}
-                      </p>
-                      {template.placeholders && template.placeholders.length > 0 && (
+
+                      {/* Content preview */}
+                      <p className="text-xs text-muted-foreground line-clamp-3 flex-1 mb-3">{t.content}</p>
+
+                      {/* Variables used */}
+                      {usedVars.length > 0 && (
                         <div className="flex flex-wrap gap-1">
-                          {template.placeholders.map((ph, idx) => (
-                            <span
-                              key={idx}
-                              className="text-xs bg-[#121212] px-2 py-0.5 rounded border border-[#2E2E2E]"
-                            >
-                              {ph}
+                          {usedVars.map(v => (
+                            <span key={v.key} className="text-[10px] px-1.5 py-0.5 rounded font-mono"
+                              style={{ backgroundColor: v.color + '18', color: v.color }}>
+                              {`{{${v.key}}}`}
                             </span>
                           ))}
                         </div>
@@ -352,7 +413,7 @@ const TemplatesPage = () => {
               </div>
             )}
           </div>
-        </div>
+        </>
       )}
     </div>
   );

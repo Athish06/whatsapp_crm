@@ -24,20 +24,22 @@ async def create_template(
         template_data.name,
         template_data.content,
         user_id,
-        template_data.segment
+        template_data.segment,
+        shop_id=template_data.shop_id,
     )
     return MessageTemplateResponse(**template)
 
 
 @router.get("/list")
 async def list_templates(
+    shop_id: str = None,
     current_user: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
-    """List all templates for the current user."""
+    """List all templates for the current user, optionally filtered by shop."""
     service = TemplateService(db)
     user_id = current_user.get("user_id") or current_user.get("id")
-    templates = await service.list_templates(user_id)
+    templates = await service.list_templates(user_id, shop_id=shop_id)
     return {"templates": templates}
 
 
@@ -73,3 +75,28 @@ async def delete_template(
         raise HTTPException(status_code=404, detail="Template not found")
     
     return {"message": "Template deleted successfully"}
+
+
+@router.put("/{template_id}")
+async def update_template(
+    template_id: str,
+    template_data: MessageTemplateCreate,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+):
+    """Update an existing template."""
+    service = TemplateService(db)
+    user_id = current_user.get("user_id") or current_user.get("id")
+    existing = await service.get_template(template_id, user_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Template not found")
+    await service.delete_template(template_id, user_id)
+    template = await service.create_template(
+        template_data.name,
+        template_data.content,
+        user_id,
+        template_data.segment,
+        shop_id=template_data.shop_id,
+    )
+    return MessageTemplateResponse(**template)
+

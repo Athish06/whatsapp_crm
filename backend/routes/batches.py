@@ -50,6 +50,9 @@ async def create_batch(
             segment_templates=batch_data.segment_templates,
             campaign_name=batch_data.campaign_name,
             file_id=batch_data.file_id,
+            shop_id=batch_data.shop_id,
+            ai_mode=batch_data.ai_mode if hasattr(batch_data, 'ai_mode') else False,
+            fixed_product=batch_data.fixed_product if hasattr(batch_data, 'fixed_product') else None,
         )
         
         # Schedule batch processing in background
@@ -249,26 +252,66 @@ async def clear_all_batches(
 @router.get("/campaigns/list")
 async def list_campaigns(
     current_user: dict = Depends(get_current_user),
-    db: Any = Depends(get_db)
+    db: Any = Depends(get_db),
 ):
-    """List all campaigns for the current user."""
+    """List all campaigns with live stats (sent, failed, segment breakdown)."""
     try:
         user_id = current_user.get("user_id") or current_user.get("id")
         campaigns = await db.campaigns.find(
             {"user_id": user_id}
         ).sort("created_at", -1).to_list(100)
-        
-        # Convert datetime and ObjectId to strings
-        for campaign in campaigns:
-            campaign["_id"] = str(campaign["_id"])
-            if isinstance(campaign.get("created_at"), datetime):
-                campaign["created_at"] = campaign["created_at"].isoformat()
-            if isinstance(campaign.get("updated_at"), datetime):
-                campaign["updated_at"] = campaign["updated_at"].isoformat()
-        
-        return {"campaigns": campaigns}
+
+        result = []
+        for c in campaigns:
+            c["_id"] = str(c["_id"])
+            if isinstance(c.get("created_at"), datetime):
+                c["created_at"] = c["created_at"].isoformat()
+            if isinstance(c.get("updated_at"), datetime):
+                c["updated_at"] = c["updated_at"].isoformat()
+
+            # Live message counts straight from messages collection
+            campaign_id = c["_id"]
+            batch_ids_cursor = db.batches.find(
+                {"campaign_id": campaign_id}, {"_id": 0, "id": 1}
+            )
+            batch_ids = [b["id"] async for b in batch_ids_cursor]
+
+            if batch_ids:
+                sent = await db.messages.count_documents(
+                    {"batch_id": {"$in": batch_ids}, "status": {"$in": ["sent", "delivered"]}}
+                )
+                failed = await db.messages.count_documents(
+                    {"batch_id": {"$in": batch_ids}, "status": "failed"}
+                )
+                pending = await db.messages.count_documents(
+                    {"batch_id": {"$in": batch_ids}, "status": {"$in": ["pending", "processing"]}}
+                )
+                c["live_sent"] = sent
+                c["live_failed"] = failed
+                c["live_pending"] = pending
+
+            result.append(c)
+
+        return {"campaigns": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/campaigns/{campaign_id}/stop")
+async def stop_campaign(
+    campaign_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Any = Depends(get_db),
+):
+    """Emergency stop: cancel all pending batches for a campaign."""
+    try:
+        user_id = current_user.get("user_id") or current_user.get("id")
+        service = BatchService(db)
+        result = await service.stop_campaign(campaign_id, user_id)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.get("/campaigns/{campaign_id}")
