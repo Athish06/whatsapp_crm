@@ -2,9 +2,9 @@
 Batch routes for campaign management.
 """
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from typing import Any
 from datetime import datetime
-from schemas import BatchCreate, BatchSplitEstimate
+from schemas import BatchCreate, BatchSplitEstimate, BatchUpdateRequest
 from services import BatchService
 from middleware import get_current_user
 from config import get_db
@@ -27,7 +27,7 @@ async def create_batch(
     batch_data: BatchCreate,
     background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db)
+    db: Any = Depends(get_db)
 ):
     """Create a batch campaign.
     
@@ -49,7 +49,10 @@ async def create_batch(
             template_id=batch_data.template_id,
             segment_templates=batch_data.segment_templates,
             campaign_name=batch_data.campaign_name,
-            file_id=batch_data.file_id
+            file_id=batch_data.file_id,
+            shop_id=batch_data.shop_id,
+            ai_mode=batch_data.ai_mode if hasattr(batch_data, 'ai_mode') else False,
+            fixed_product=batch_data.fixed_product if hasattr(batch_data, 'fixed_product') else None,
         )
         
         # Schedule batch processing in background
@@ -66,7 +69,7 @@ async def create_batch(
 @router.get("/list")
 async def list_batches(
     current_user: dict = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db)
+    db: Any = Depends(get_db)
 ):
     """List all batches for the current user."""
     user_id = current_user.get("user_id") or current_user.get("id")
@@ -75,12 +78,61 @@ async def list_batches(
     return {"batches": batches}
 
 
+@router.get("/file/{file_id}/summary")
+async def get_file_schedule_summary(
+    file_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Any = Depends(get_db)
+):
+    """Get scheduling summary for a specific uploaded file."""
+    try:
+        user_id = current_user.get("user_id") or current_user.get("id")
+
+        campaigns = await db.campaigns.find(
+            {"user_id": user_id, "file_id": file_id},
+            {"_id": 0, "campaign_name": 1, "created_at": 1, "status": 1}
+        ).sort("created_at", -1).to_list(100)
+
+        batches = await db.batches.find(
+            {"user_id": user_id, "file_id": file_id},
+            {"_id": 0, "id": 1, "status": 1, "success_count": 1, "failed_count": 1, "customer_count": 1, "created_at": 1}
+        ).to_list(5000)
+
+        queue_pending = await db.msg_queues.count_documents({"user_id": user_id, "batch_id": {"$in": [b.get("id") for b in batches if b.get("id")]}, "status": "pending"}) if batches else 0
+
+        batch_ids = [b.get("id") for b in batches if b.get("id")]
+        if batch_ids:
+            sent_messages = await db.messages.count_documents(
+                {"user_id": user_id, "batch_id": {"$in": batch_ids}, "status": {"$in": ["sent", "delivered"]}}
+            )
+            failed_messages = await db.messages.count_documents(
+                {"user_id": user_id, "batch_id": {"$in": batch_ids}, "status": {"$in": ["failed", "failed_permanently"]}}
+            )
+        else:
+            sent_messages = 0
+            failed_messages = 0
+
+        return {
+            "file_id": file_id,
+            "schedule_count": len(campaigns),
+            "total_batches": len(batches),
+            "active_batches": sum(1 for b in batches if b.get("status") in ["pending", "scheduled", "sending"]),
+            "messages_sent": sent_messages,
+            "messages_failed": failed_messages,
+            "messages_in_queue": queue_pending,
+            "last_scheduled_at": campaigns[0].get("created_at") if campaigns else None,
+            "campaigns": campaigns,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/{batch_id}/reschedule")
 async def reschedule_batch(
     batch_id: str,
     background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db)
+    db: Any = Depends(get_db)
 ):
     """Reschedule a failed batch."""
     try:
@@ -99,11 +151,82 @@ async def reschedule_batch(
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@router.patch("/{batch_id}")
+async def update_batch(
+    batch_id: str,
+    payload: BatchUpdateRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Any = Depends(get_db)
+):
+    """Edit scheduled batch time/templates before it is completed."""
+    try:
+        user_id = current_user.get("user_id") or current_user.get("id")
+        service = BatchService(db)
+        result = await service.update_batch(
+            batch_id=batch_id,
+            user_id=user_id,
+            start_time=payload.start_time,
+            template_id=payload.template_id,
+            segment_templates=payload.segment_templates,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{batch_id}/pause")
+async def pause_batch(
+    batch_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Any = Depends(get_db)
+):
+    """Pause a scheduled batch."""
+    try:
+        user_id = current_user.get("user_id") or current_user.get("id")
+        service = BatchService(db)
+        return await service.pause_batch(batch_id, user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{batch_id}/resume")
+async def resume_batch(
+    batch_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+    db: Any = Depends(get_db)
+):
+    """Resume a paused batch."""
+    try:
+        user_id = current_user.get("user_id") or current_user.get("id")
+        service = BatchService(db)
+        result = await service.resume_batch(batch_id, user_id)
+        background_tasks.add_task(service.process_pending_batches, user_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/{batch_id}")
+async def delete_batch(
+    batch_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Any = Depends(get_db)
+):
+    """Delete extra/wrongly created scheduled batch."""
+    try:
+        user_id = current_user.get("user_id") or current_user.get("id")
+        service = BatchService(db)
+        return await service.delete_batch(batch_id, user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/{batch_id}/messages")
 async def get_batch_messages(
     batch_id: str,
     current_user: dict = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db)
+    db: Any = Depends(get_db)
 ):
     """Get all messages for a batch."""
     service = BatchService(db)
@@ -114,7 +237,7 @@ async def get_batch_messages(
 @router.delete("/clear-all")
 async def clear_all_batches(
     current_user: dict = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db)
+    db: Any = Depends(get_db)
 ):
     """Clear all batches and messages for the current user."""
     try:
@@ -129,33 +252,73 @@ async def clear_all_batches(
 @router.get("/campaigns/list")
 async def list_campaigns(
     current_user: dict = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db)
+    db: Any = Depends(get_db),
 ):
-    """List all campaigns for the current user."""
+    """List all campaigns with live stats (sent, failed, segment breakdown)."""
     try:
         user_id = current_user.get("user_id") or current_user.get("id")
         campaigns = await db.campaigns.find(
             {"user_id": user_id}
         ).sort("created_at", -1).to_list(100)
-        
-        # Convert datetime and ObjectId to strings
-        for campaign in campaigns:
-            campaign["_id"] = str(campaign["_id"])
-            if isinstance(campaign.get("created_at"), datetime):
-                campaign["created_at"] = campaign["created_at"].isoformat()
-            if isinstance(campaign.get("updated_at"), datetime):
-                campaign["updated_at"] = campaign["updated_at"].isoformat()
-        
-        return {"campaigns": campaigns}
+
+        result = []
+        for c in campaigns:
+            c["_id"] = str(c["_id"])
+            if isinstance(c.get("created_at"), datetime):
+                c["created_at"] = c["created_at"].isoformat()
+            if isinstance(c.get("updated_at"), datetime):
+                c["updated_at"] = c["updated_at"].isoformat()
+
+            # Live message counts straight from messages collection
+            campaign_id = c["_id"]
+            batch_ids_cursor = db.batches.find(
+                {"campaign_id": campaign_id}, {"_id": 0, "id": 1}
+            )
+            batch_ids = [b["id"] async for b in batch_ids_cursor]
+
+            if batch_ids:
+                sent = await db.messages.count_documents(
+                    {"batch_id": {"$in": batch_ids}, "status": {"$in": ["sent", "delivered"]}}
+                )
+                failed = await db.messages.count_documents(
+                    {"batch_id": {"$in": batch_ids}, "status": "failed"}
+                )
+                pending = await db.messages.count_documents(
+                    {"batch_id": {"$in": batch_ids}, "status": {"$in": ["pending", "processing"]}}
+                )
+                c["live_sent"] = sent
+                c["live_failed"] = failed
+                c["live_pending"] = pending
+
+            result.append(c)
+
+        return {"campaigns": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/campaigns/{campaign_id}/stop")
+async def stop_campaign(
+    campaign_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Any = Depends(get_db),
+):
+    """Emergency stop: cancel all pending batches for a campaign."""
+    try:
+        user_id = current_user.get("user_id") or current_user.get("id")
+        service = BatchService(db)
+        result = await service.stop_campaign(campaign_id, user_id)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.get("/campaigns/{campaign_id}")
 async def get_campaign_details(
     campaign_id: str,
     current_user: dict = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db)
+    db: Any = Depends(get_db)
 ):
     """Get detailed information about a campaign including its batches."""
     try:
@@ -174,6 +337,12 @@ async def get_campaign_details(
             {"campaign_id": campaign_id},
             {"_id": 0}
         ).sort("batch_number", 1).to_list(1000)
+
+        # Get live campaign_batches map for this campaign
+        campaign_batches = await db.campaign_batches.find(
+            {"campaign_id": campaign_id, "user_id": user_id},
+            {"_id": 0}
+        ).sort("batch_number", 1).to_list(1000)
         
         # Convert datetime fields
         if isinstance(campaign.get("created_at"), datetime):
@@ -184,7 +353,8 @@ async def get_campaign_details(
         
         return {
             "campaign": campaign,
-            "batches": batches
+            "batches": batches,
+            "campaign_batches": campaign_batches,
         }
     except HTTPException:
         raise
@@ -195,7 +365,7 @@ async def get_campaign_details(
 @router.get("/queue/stats")
 async def get_queue_stats(
     current_user: dict = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db)
+    db: Any = Depends(get_db)
 ):
     """Get message queue statistics."""
     try:

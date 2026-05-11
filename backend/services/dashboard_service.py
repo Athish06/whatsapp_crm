@@ -21,18 +21,24 @@ class DashboardService:
         
         # Messages sent (successfully)
         messages_sent = await self.db.messages.count_documents(
-            {"status": MessageStatus.SENT.value}
+            {
+                "user_id": user_id,
+                "status": {"$in": [MessageStatus.SENT.value, MessageStatus.DELIVERED.value]}
+            }
         )
         
         # Messages failed
         messages_failed = await self.db.messages.count_documents(
-            {"status": MessageStatus.FAILED.value}
+            {
+                "user_id": user_id,
+                "status": {"$in": [MessageStatus.FAILED.value, "failed_permanently"]}
+            }
         )
         
-        # Active batches (pending or sending)
+        # Active batches (pending, scheduled, or sending)
         active_batches = await self.db.batches.count_documents({
             "user_id": user_id,
-            "status": {"$in": [BatchStatus.PENDING.value, BatchStatus.SENDING.value]}
+            "status": {"$in": [BatchStatus.PENDING.value, BatchStatus.SCHEDULED.value, BatchStatus.SENDING.value]}
         })
         
         # Templates count

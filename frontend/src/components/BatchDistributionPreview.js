@@ -1,5 +1,5 @@
 import React from 'react';
-import { Crown, Package, Zap, User, Users } from 'lucide-react';
+import { Crown, AlertTriangle, Package, Zap, User, Users } from 'lucide-react';
 
 const BatchDistributionPreview = ({ classifications, batchSize }) => {
   // Calculate batch distribution
@@ -8,12 +8,13 @@ const BatchDistributionPreview = ({ classifications, batchSize }) => {
       return [];
     }
 
-    // Priority order: VIPs (Champions) → Loyal → Potential → At-Risk
+    // Priority order: VIP → At-Risk → Potential (Bulk) → Loyal (Frequent) → Boring
     const segments = [
-      { type: 'both', count: classifications.both || 0, label: 'VIP Champions', icon: Crown, color: 'text-emerald-400', description: 'RFM 12-15' },
-      { type: 'frequent_customer', count: classifications.frequent_customer || 0, label: 'Loyal Customers', icon: Zap, color: 'text-blue-400', description: 'RFM 8-11' },
-      { type: 'bulk_buyer', count: classifications.bulk_buyer || 0, label: 'Potential Growth', icon: Package, color: 'text-purple-400', description: 'RFM 5-7' },
-      { type: 'regular', count: classifications.regular || 0, label: 'At-Risk Regular', icon: User, color: 'text-slate-400', description: 'RFM 3-4' }
+      { type: 'vip', count: classifications.vip || 0, label: 'VIP Champions', icon: Crown, color: 'text-yellow-400', description: 'Priority 1' },
+      { type: 'at_risk', count: classifications.at_risk || 0, label: 'At-Risk', icon: AlertTriangle, color: 'text-red-400', description: 'Priority 1 (Urgent)' },
+      { type: 'potential_bulk', count: classifications.potential_bulk || 0, label: 'Potential (Bulk)', icon: Package, color: 'text-purple-400', description: 'Priority 2' },
+      { type: 'loyal_frequent', count: classifications.loyal_frequent || 0, label: 'Loyal (Frequent)', icon: Zap, color: 'text-blue-400', description: 'Priority 3' },
+      { type: 'boring', count: classifications.boring || 0, label: 'Boring', icon: User, color: 'text-slate-400', description: 'Priority 4' }
     ];
 
     const batches = [];

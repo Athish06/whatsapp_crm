@@ -8,11 +8,12 @@ from enum import Enum
 
 
 class CustomerCategory(str, Enum):
-    """Customer classification categories."""
-    BULK_BUYER = "bulk_buyer"
-    FREQUENT_CUSTOMER = "frequent_customer"
-    BOTH = "both"
-    REGULAR = "regular"
+    """Customer classification categories - Hybrid RFM+B Intelligence."""
+    VIP = "vip"                          # Champions (RFM >= 12)
+    AT_RISK = "at_risk"                  # Lapsing High-Potentials (R=1, Total>4)
+    POTENTIAL_BULK = "potential_bulk"    # Pantry Stockers (5-11, High Bulkiness)
+    LOYAL_FREQUENT = "loyal_frequent"    # Daily Habit Shoppers (5-11, F>=M)
+    BORING = "boring"                    # Low-engagement Baseline (RFM <= 4)
 
 
 class BatchStatus(str, Enum):
@@ -35,12 +36,61 @@ class MessageStatus(str, Enum):
 
 
 class MessagePriority(int, Enum):
-    """Message priority levels."""
-    VIP = 1           # VIP Champions (RFM 12-15)
-    LOYAL = 2         # Loyal Customers (RFM 8-11)
-    POTENTIAL = 3     # Potential Growth (RFM 5-7)
-    REGULAR = 4       # At-Risk Regular (RFM 3-4)
+    """Message priority levels - Hybrid RFM+B Intelligence."""
+    VIP = 1                # VIP Champions (Retain gold assets)
+    AT_RISK = 1            # At-Risk (Urgent - prevent churn)
+    POTENTIAL_BULK = 2     # Potential Bulk (Increase spend per visit)
+    LOYAL_FREQUENT = 3     # Loyal Frequent (Reward the habit)
+    BORING = 4             # Boring (Low priority)
 
+
+class ProductType(str, Enum):
+    """Product Type for Intelligence filtering (Premium vs Bulk vs Daily)."""
+    PREMIUM = "premium"
+    BULK = "bulk"
+    DAILY = "daily"
+
+# ============ Shop Models (NEW) ============
+
+class ShopCreate(BaseModel):
+    """Create shop request."""
+    shop_name: str
+
+class ShopResponse(BaseModel):
+    """Shop response."""
+    id: str
+    user_id: str
+    shop_name: str
+    created_at: datetime
+
+# ============ Product Inventory Models (NEW) ============
+
+class ProductInventoryCreate(BaseModel):
+    """Create product inventory item request."""
+    shop_id: str
+    product_id: str
+    name: str
+    category: str
+    price: float
+    product_type: ProductType
+
+class ProductInventoryResponse(ProductInventoryCreate):
+    """Product inventory response."""
+    id: str
+
+# ============ Customer Behavior Map Models (NEW) ============
+
+class CustomerBehaviorMapCreate(BaseModel):
+    """Create customer behavior map request."""
+    shop_id: str
+    customer_id: str
+    fav_items: List[str] = []
+    recent_purchases: List[str] = []
+    top_categories: List[str] = []
+
+class CustomerBehaviorMapResponse(CustomerBehaviorMapCreate):
+    """Customer behavior map response."""
+    id: str
 
 # ============ Auth Schemas ============
 
@@ -105,6 +155,7 @@ class CustomerUploadResponse(BaseModel):
 
 class CustomerUploadWithMappingRequest(BaseModel):
     """Request for uploading customers with column mapping."""
+    shop_id: Optional[str] = None  # To link RFM segments to a specific shop's dataset
     column_mapping: Dict[str, str]
     percentile: Optional[int] = 70
 
@@ -113,6 +164,7 @@ class CustomerUploadWithMappingRequest(BaseModel):
 
 class MessageTemplateCreate(BaseModel):
     """Create message template request."""
+    shop_id: Optional[str] = None
     name: str
     content: str
     segment: Optional[str] = "all"  # "all", "both" (VIP), "bulk_buyer", "frequent_customer", "regular"
@@ -132,6 +184,7 @@ class MessageTemplateResponse(BaseModel):
 
 class BatchCreate(BaseModel):
     """Create batch campaign request."""
+    shop_id: Optional[str] = None
     campaign_name: Optional[str] = None  # Campaign name for tracking
     file_id: Optional[str] = None  # File ID for campaign tracking
     template_id: Optional[str] = None  # For backwards compatibility (single template)
@@ -140,6 +193,15 @@ class BatchCreate(BaseModel):
     batch_size: int
     start_time: datetime
     priority: int = 0
+    ai_mode: bool = False  # Whether to use AI-discovered products from behavior map
+    fixed_product: Optional[str] = None  # Fixed product name for manual mode
+
+
+class BatchUpdateRequest(BaseModel):
+    """Edit scheduled batch request."""
+    start_time: Optional[datetime] = None
+    template_id: Optional[str] = None
+    segment_templates: Optional[Dict[str, str]] = None
 
 
 class BatchResponse(BaseModel):
@@ -205,6 +267,7 @@ class FileUploadResponse(BaseModel):
 
 class CampaignBatchCreate(BaseModel):
     """Create campaign batch request."""
+    shop_id: Optional[str] = None
     campaign_name: str
     file_id: Optional[str] = None
     segment_templates: Dict[str, str]  # segment -> template_id mapping
@@ -253,6 +316,7 @@ class MessageQueueResponse(BaseModel):
 
 class ProcessFileRequest(BaseModel):
     """Request to process uploaded file with column mapping."""
+    shop_id: Optional[str] = None
     column_mapping: Dict[str, str]
     percentile: Optional[int] = 70
     user_id: str
@@ -262,6 +326,7 @@ class FileMetadata(BaseModel):
     """File metadata stored in database."""
     id: Optional[str] = Field(alias="_id", default=None)
     user_id: str
+    shop_id: Optional[str] = None
     file_name: str
     original_file_name: str
     file_url: str

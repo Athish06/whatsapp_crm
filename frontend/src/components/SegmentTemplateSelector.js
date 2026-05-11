@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Crown, Package, Zap, User, ChevronDown, Check } from 'lucide-react';
+import { Crown, AlertTriangle, Package, Zap, User, ChevronDown, Check } from 'lucide-react';
 
 const SegmentTemplateSelector = ({ 
   segment, 
@@ -21,36 +21,48 @@ const SegmentTemplateSelector = ({
 
   const getSegmentInfo = () => {
     const segmentMap = {
-      'both': { 
-        label: 'VIP Customers', 
+      'vip': { 
+        label: 'VIP Champions', 
         icon: Crown, 
-        color: 'text-emerald-400',
-        bgColor: 'bg-emerald-400/10',
-        borderColor: 'border-emerald-400/30'
+        color: 'text-yellow-400',
+        bgColor: 'bg-yellow-400/10',
+        borderColor: 'border-yellow-400/30',
+        description: 'Retain gold assets'
       },
-      'bulk_buyer': { 
-        label: 'Bulk Buyers', 
+      'at_risk': { 
+        label: 'At-Risk', 
+        icon: AlertTriangle, 
+        color: 'text-red-400',
+        bgColor: 'bg-red-400/10',
+        borderColor: 'border-red-400/30',
+        description: 'Urgent - prevent churn'
+      },
+      'potential_bulk': { 
+        label: 'Potential (Bulk)', 
         icon: Package, 
         color: 'text-purple-400',
         bgColor: 'bg-purple-400/10',
-        borderColor: 'border-purple-400/30'
+        borderColor: 'border-purple-400/30',
+        description: 'Increase spend per visit'
       },
-      'frequent_customer': { 
-        label: 'Frequent Customers', 
+      'loyal_frequent': { 
+        label: 'Loyal (Frequent)', 
         icon: Zap, 
         color: 'text-blue-400',
         bgColor: 'bg-blue-400/10',
-        borderColor: 'border-blue-400/30'
+        borderColor: 'border-blue-400/30',
+        description: 'Reward the habit'
       },
-      'regular': { 
-        label: 'Regular Customers', 
+      'boring': { 
+        label: 'Boring', 
         icon: User, 
         color: 'text-slate-400',
         bgColor: 'bg-slate-400/10',
-        borderColor: 'border-slate-400/30'
+        borderColor: 'border-slate-400/30',
+        description: 'Low priority baseline'
       }
     };
-    return segmentMap[segment] || segmentMap['regular'];
+    return segmentMap[segment] || segmentMap['boring'];
   };
 
   const segmentInfo = getSegmentInfo();

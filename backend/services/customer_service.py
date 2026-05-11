@@ -3,7 +3,6 @@ Customer service for managing customer data.
 """
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
-from motor.motor_asyncio import AsyncIOMotorDatabase
 import uuid
 import pandas as pd
 import logging
@@ -19,7 +18,7 @@ logger = logging.getLogger(__name__)
 class CustomerService:
     """Service for customer operations."""
     
-    def __init__(self, db: AsyncIOMotorDatabase):
+    def __init__(self, db: Any):
         self.db = db
     
     async def detect_file_columns(
@@ -117,12 +116,14 @@ class CustomerService:
         file_content: bytes, 
         filename: str, 
         user_id: str,
+        shop_id: Optional[str] = None,
         file_url: str = None,
         file_id: str = None,
+        campaign_id: str = None,
         column_mapping: Optional[Dict[str, str]] = None,
         percentile: int = 70
     ) -> Dict[str, Any]:
-        """Process and upload customers from CSV/Excel/PDF file with dynamic segmentation.
+        """Process and upload customers from CSV/Excel/PDF file with Hybrid RFM segmentation.
         
         Args:
             file_content: Raw file bytes
@@ -147,13 +148,20 @@ class CustomerService:
         for _, row in df.iterrows():
             # Extract all columns from the row
             customer_data = row.to_dict()
+            phone_value = str(customer_data.get('phone', '')).strip()
+
+            # Blank phone rows cannot be safely upserted because phone is part of the unique key.
+            if not phone_value:
+                continue
             
             # Build customer document with standard fields
             customer_doc = {
                 "id": str(uuid.uuid4()),
                 "user_id": user_id,
+                "shop_id": shop_id,
+                "campaign_id": campaign_id,
                 "name": str(customer_data.get('name', '')).strip(),
-                "phone": str(customer_data.get('phone', '')).strip(),
+                "phone": phone_value,
                 "email": str(customer_data.get('email', '')).strip(),
                 "category": customer_data.get('category', 'regular'),
                 "segment": customer_data.get('segment', 'regular'),  # Add segment field
@@ -203,8 +211,25 @@ class CustomerService:
                 customer_doc['custom_fields'] = additional_fields
             
             customers.append(customer_doc)
+
+        # Deduplicate on the natural unique key before bulk upsert to avoid duplicate-key crashes.
+        deduped_customers = []
+        seen_keys = set()
+        for customer in customers:
+            key = (customer.get("user_id"), customer.get("shop_id"), customer.get("campaign_id"), customer.get("phone"))
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            deduped_customers.append(customer)
+        customers = deduped_customers
         
-        # Insert/Update customers in database (upsert to prevent duplicates)
+        # Overwrite snapshot per campaign container.
+        delete_filter = {"user_id": user_id, "campaign_id": campaign_id, "shop_id": shop_id}
+        if not campaign_id:
+            delete_filter = {"user_id": user_id, "campaign_id": {"$exists": False}, "shop_id": shop_id}
+        await self.db.customers.delete_many(delete_filter)
+
+        # Insert/Update customers in database (upsert keeps unique phone safety inside current snapshot)
         if customers:
             from pymongo import UpdateOne
             
@@ -213,7 +238,12 @@ class CustomerService:
             for customer in customers:
                 operations.append(
                     UpdateOne(
-                        {"user_id": customer["user_id"], "phone": customer["phone"]},  # Match by user + phone
+                        {
+                            "user_id": customer["user_id"],
+                            "shop_id": customer.get("shop_id"),
+                            "campaign_id": customer.get("campaign_id"),
+                            "phone": customer["phone"],
+                        },  # Match by user + campaign + phone
                         {"$set": customer},  # Update all fields
                         upsert=True  # Insert if not exists
                     )
@@ -236,18 +266,24 @@ class CustomerService:
             "rfm_info": rfm_info
         }
     
-    async def list_customers(self, user_id: str) -> Dict[str, Any]:
-        """List all customers for a user."""
+    async def list_customers(self, user_id: str, shop_id: Optional[str] = None) -> Dict[str, Any]:
+        """List all customers for a user (optionally scoped to a shop)."""
+        query = {"user_id": user_id}
+        if shop_id:
+            query["shop_id"] = shop_id
         customers = await self.db.customers.find(
-            {"user_id": user_id},
+            query,
             {"_id": 0}
         ).sort("uploaded_at", -1).to_list(1000)
         
         return {"customers": customers, "total": len(customers)}
     
-    async def clear_customers(self, user_id: str) -> int:
-        """Delete all customers for a user."""
-        result = await self.db.customers.delete_many({"user_id": user_id})
+    async def clear_customers(self, user_id: str, shop_id: Optional[str] = None) -> int:
+        """Delete all customers for a user (optionally scoped to a shop)."""
+        query = {"user_id": user_id}
+        if shop_id:
+            query["shop_id"] = shop_id
+        result = await self.db.customers.delete_many(query)
         return result.deleted_count
     
     async def get_customers_by_file(self, file_id: str, user_id: str) -> Dict[str, Any]:
@@ -267,16 +303,19 @@ class CustomerService:
         
         # Calculate classifications
         classifications = {
-            "bulk_buyer": 0,
-            "frequent_customer": 0,
-            "both": 0,
-            "regular": 0
+            "vip": 0,
+            "at_risk": 0,
+            "potential_bulk": 0,
+            "loyal_frequent": 0,
+            "boring": 0,
         }
         
         for customer in customers:
-            category = customer.get("category", "regular")
-            if category in classifications:
-                classifications[category] += 1
+            segment = customer.get("segment") or customer.get("category") or "boring"
+            if segment in classifications:
+                classifications[segment] += 1
+            else:
+                classifications["boring"] += 1
         
         return {
             "total_customers": len(customers),

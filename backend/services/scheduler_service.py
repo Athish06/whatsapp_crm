@@ -7,7 +7,6 @@ import time
 import asyncio
 from datetime import datetime, timezone
 from typing import List, Dict, Any
-from motor.motor_asyncio import AsyncIOMotorDatabase
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
@@ -20,7 +19,7 @@ class MessageQueueScheduler:
     Runs every 60 seconds to fetch and send pending messages.
     """
     
-    def __init__(self, db: AsyncIOMotorDatabase):
+    def __init__(self, db: Any):
         self.db = db
         self.scheduler = AsyncIOScheduler()
         self.is_running = False
@@ -278,16 +277,9 @@ class MessageQueueScheduler:
         """
         Get statistics about the message queue.
         """
-        pipeline = [
-            {
-                "$group": {
-                    "_id": "$status",
-                    "count": {"$sum": 1}
-                }
-            }
-        ]
-        
-        stats_cursor = self.db.messages.aggregate(pipeline)
+        pipeline = [{"$group": {"_id": "$status", "count": {"$sum": 1}}}]
+
+        stats_cursor = self.db.msg_queues.aggregate(pipeline)
         stats_list = await stats_cursor.to_list(length=None)
         
         stats = {item["_id"]: item["count"] for item in stats_list}
@@ -295,7 +287,6 @@ class MessageQueueScheduler:
         return {
             "pending": stats.get("pending", 0),
             "processing": stats.get("processing", 0),
-            "sent": stats.get("sent", 0),
-            "failed_permanently": stats.get("failed_permanently", 0),
+            "paused": stats.get("paused", 0),
             "total": sum(stats.values())
         }

@@ -3,10 +3,8 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { 
   LayoutDashboard, 
-  Send, 
   Activity, 
   FileText, 
-  History, 
   Settings, 
   LogOut,
   ChevronLeft,
@@ -21,10 +19,8 @@ const Sidebar = () => {
 
   const menuItems = [
     { icon: LayoutDashboard, label: 'Dashboard', path: '/dashboard' },
-    { icon: Send, label: 'Campaign', path: '/campaign' },
-    { icon: Activity, label: 'Monitor', path: '/monitor' },
-    { icon: FileText, label: 'Templates', path: '/templates' },
-    { icon: History, label: 'History', path: '/history' },
+    { icon: FileText, label: 'Template Builder', path: '/templates' },
+    { icon: Activity, label: 'Monitor & History', path: '/monitor' },
     { icon: Settings, label: 'Settings', path: '/settings' },
   ];
 

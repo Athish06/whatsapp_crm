@@ -27,11 +27,30 @@ export const dashboardAPI = {
   getStats: () => api.get('/dashboard/stats'),
 };
 
-// API endpoints for customers
-export const customersAPI = {
-  upload: (file) => {
+// API endpoints for shops
+export const shopsAPI = {
+  create: (shop_name) => api.post('/shops/create', { shop_name }),
+  list: () => api.get('/shops/list'),
+  getDetail: (shopId) => api.get(`/shops/${shopId}`),
+  deleteCampaign: (shopId) => api.delete(`/shops/${shopId}/campaign`),
+  deleteShop: (shopId) => api.delete(`/shops/${shopId}`),
+  upload: (shopId, dataType, file) => {
     const formData = new FormData();
     formData.append('file', file);
+    return api.post(`/shops/${shopId}/upload/${dataType}`, formData);
+  },
+  process: (shopId, dataType, fileId, data) =>
+    api.post(`/shops/${shopId}/process/${dataType}/${fileId}`, data),
+};
+
+// API endpoints for customers
+export const customersAPI = {
+  upload: (file, campaignId = null) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (campaignId) {
+      formData.append('campaign_id', campaignId);
+    }
     return api.post('/customers/upload', formData);
   },
   detectColumns: (file) => {
@@ -39,24 +58,28 @@ export const customersAPI = {
     formData.append('file', file);
     return api.post('/customers/detect-columns', formData);
   },
-  uploadWithMapping: (file, columnMapping, percentile = 70) => {
+  uploadWithMapping: (file, columnMapping, percentile = 70, campaignId = null) => {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('column_mapping', JSON.stringify(columnMapping));
     formData.append('percentile', percentile.toString());
+    if (campaignId) {
+      formData.append('campaign_id', campaignId);
+    }
     return api.post('/customers/upload-with-mapping', formData);
   },
   processWithMapping: (fileId, data) => api.post(`/customers/process-file/${fileId}`, data),
-  list: () => api.get('/customers/list'),
-  clear: () => api.delete('/customers/clear'),
+  list: (shopId = null) => api.get('/customers/list', { params: shopId ? { shop_id: shopId } : {} }),
+  clear: (shopId = null) => api.delete('/customers/clear', { params: shopId ? { shop_id: shopId } : {} }),
   getByFile: (fileId) => api.get(`/customers/by-file/${fileId}`),
 };
 
 // API endpoints for templates
 export const templatesAPI = {
   create: (data) => api.post('/templates/create', data),
-  list: () => api.get('/templates/list'),
+  list: (shopId = null) => api.get('/templates/list', { params: shopId ? { shop_id: shopId } : {} }),
   get: (id) => api.get(`/templates/${id}`),
+  update: (id, data) => api.put(`/templates/${id}`, data),
   delete: (id) => api.delete(`/templates/${id}`),
 };
 
@@ -67,10 +90,17 @@ export const batchesAPI = {
   }),
   create: (data) => api.post('/batches/create', data),
   list: () => api.get('/batches/list'),
+  campaignsList: () => api.get('/batches/campaigns/list'),
+  stopCampaign: (campaignId) => api.post(`/batches/campaigns/${campaignId}/stop`),
   reschedule: (id) => api.post(`/batches/${id}/reschedule`),
+  pause: (id) => api.post(`/batches/${id}/pause`),
+  resume: (id) => api.post(`/batches/${id}/resume`),
+  update: (id, data) => api.patch(`/batches/${id}`, data),
+  delete: (id) => api.delete(`/batches/${id}`),
   getMessages: (id) => api.get(`/batches/${id}/messages`),
   clearAll: () => api.delete('/batches/clear-all'),
   getQueueStats: () => api.get('/batches/queue/stats'),
+  getFileSummary: (fileId) => api.get(`/batches/file/${fileId}/summary`),
 };
 
 // API endpoints for files

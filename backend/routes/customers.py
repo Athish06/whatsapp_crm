@@ -16,6 +16,7 @@ router = APIRouter(prefix="/customers", tags=["customers"])
 
 
 class ProcessFileRequest(BaseModel):
+    shop_id: Optional[str] = None
     column_mapping: dict
     percentile: Optional[int] = 70
 
@@ -36,9 +37,10 @@ async def process_uploaded_file(
         user_id = current_user.get("user_id") or current_user.get("id")
 
         # Fetch file metadata from DB
-        file_doc = await db.files.find_one(
-            {"_id": ObjectId(file_id), "user_id": user_id}
-        )
+        file_filter = {"_id": ObjectId(file_id), "user_id": user_id}
+        if body.shop_id:
+            file_filter["shop_id"] = body.shop_id
+        file_doc = await db.files.find_one(file_filter)
         if not file_doc:
             raise HTTPException(status_code=404, detail="File not found")
 
@@ -51,8 +53,10 @@ async def process_uploaded_file(
             file_content,
             file_doc["original_file_name"],
             user_id,
+            shop_id=body.shop_id,
             file_url=file_doc.get("file_url"),
             file_id=str(file_doc["_id"]),
+            campaign_id=file_doc.get("campaign_id"),
             column_mapping=body.column_mapping,
             percentile=body.percentile
         )
@@ -114,18 +118,19 @@ async def upload_customers_with_mapping(
     file: UploadFile = File(...),
     column_mapping: str = Form(...),
     percentile: Optional[int] = Form(70),
+    campaign_id: Optional[str] = Form(None),
+    shop_id: Optional[str] = Form(None),
     current_user: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
     """
-    Upload customers with custom column mapping and dynamic segmentation.
+    Upload customers with custom column mapping and Hybrid RFM segmentation.
     
-    This endpoint uses PERCENTILE-BASED thresholds for segmentation:
-    - Calculates 70th percentile (customizable) for purchase_count and avg_items_per_order
-    - High Frequency + High Bulk = "both" (VIP)
-    - High Frequency only = "frequent_customer"
-    - High Bulk only = "bulk_buyer"
-    - Low both = "regular"
+    This endpoint uses QUINTILE-BASED scoring for R/F/M:
+    - Recency (lower days = higher score)
+    - Frequency (higher count = higher score)
+    - Monetary (higher spend = higher score)
+    Then maps into VIP / Potential / Loyal / At-Risk / Boring.
     
     Args:
         file: CSV/PDF file
@@ -163,7 +168,10 @@ async def upload_customers_with_mapping(
         file_metadata = await file_service.upload_file(
             file=file,
             user_id=user_id,
-            db=db
+            db=db,
+            shop_id=shop_id,
+            data_purpose="customer_summary",
+            campaign_id=campaign_id,
         )
         
         # Process customer data with dynamic segmentation
@@ -172,8 +180,10 @@ async def upload_customers_with_mapping(
             content,
             file.filename,
             user_id,
+            shop_id=shop_id,
             file_url=file_metadata["file_url"],
             file_id=file_metadata["file_id"],
+            campaign_id=file_metadata.get("campaign_id"),
             column_mapping=mapping_dict,
             percentile=percentile
         )
@@ -194,6 +204,8 @@ async def upload_customers_with_mapping(
 @router.post("/upload", response_model=CustomerUploadResponse)
 async def upload_customers(
     file: UploadFile = File(...),
+    campaign_id: Optional[str] = Form(None),
+    shop_id: Optional[str] = Form(None),
     current_user: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
@@ -243,7 +255,10 @@ async def upload_customers(
         file_metadata = await file_service.upload_file(
             file=file,
             user_id=user_id,
-            db=db
+            db=db,
+            shop_id=shop_id,
+            data_purpose="customer_summary",
+            campaign_id=campaign_id,
         )
         
         # Step 2: Process customer data from file content
@@ -252,8 +267,10 @@ async def upload_customers(
             content, 
             file.filename, 
             user_id,
+            shop_id=shop_id,
             file_url=file_metadata["file_url"],
-            file_id=file_metadata["file_id"]
+            file_id=file_metadata["file_id"],
+            campaign_id=file_metadata.get("campaign_id"),
         )
         
         return CustomerUploadResponse(**result)
@@ -269,13 +286,14 @@ async def upload_customers(
 
 @router.get("/list")
 async def list_customers(
+    shop_id: Optional[str] = None,
     current_user: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
     """List all customers for the current user."""
     user_id = current_user.get("user_id") or current_user.get("id")
     service = CustomerService(db)
-    return await service.list_customers(user_id)
+    return await service.list_customers(user_id, shop_id=shop_id)
 
 
 @router.get("/by-file/{file_id}")
@@ -292,11 +310,12 @@ async def get_customers_by_file(
 
 @router.delete("/clear")
 async def clear_customers(
+    shop_id: Optional[str] = None,
     current_user: dict = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
-    """Delete all customers for the current user."""
+    """Delete all customers for the current user (optionally scoped to a shop)."""
     user_id = current_user.get("user_id") or current_user.get("id")
     service = CustomerService(db)
-    deleted_count = await service.clear_customers(user_id)
+    deleted_count = await service.clear_customers(user_id, shop_id=shop_id)
     return {"deleted_count": deleted_count}

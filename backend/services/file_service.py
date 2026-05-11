@@ -92,7 +92,11 @@ class FileUploadService:
         self,
         file: UploadFile,
         user_id: str,
-        db: AsyncIOMotorDatabase
+        db: AsyncIOMotorDatabase,
+        shop_id: Optional[str] = None,
+        data_purpose: str = "customer_summary",
+        linked_customer_file_id: str = None,
+        campaign_id: str = None,
     ) -> Dict[str, Any]:
         """
         Upload file to Backblaze B2 and store metadata in MongoDB.
@@ -131,11 +135,14 @@ class FileUploadService:
             logger.info(f"Uploading file: {file.filename} ({file_size} bytes) for user {user_id}")
             
             # Check for duplicate file upload
-            existing_file = await db.files.find_one({
+            existing_file_filter = {
                 "user_id": user_id,
                 "original_file_name": file.filename,
                 "file_size": file_size
-            })
+            }
+            if shop_id:
+                existing_file_filter["shop_id"] = shop_id
+            existing_file = await db.files.find_one(existing_file_filter)
             
             if existing_file:
                 logger.warning(f"Duplicate file detected: {file.filename} already uploaded by user {user_id}")
@@ -146,8 +153,14 @@ class FileUploadService:
                     "file_size": existing_file["file_size"],
                     "uploaded_at": existing_file["uploaded_at"],
                     "user_id": user_id,
+                    "campaign_id": existing_file.get("campaign_id"),
                     "duplicate": True  # Flag to notify frontend
                 }
+
+            # Keep all data files grouped under a campaign container.
+            resolved_campaign_id = campaign_id
+            if not resolved_campaign_id and data_purpose == "customer_summary":
+                resolved_campaign_id = str(uuid.uuid4())
             
             # Upload to Backblaze B2
             file_info = self.bucket.upload_bytes(
@@ -170,11 +183,15 @@ class FileUploadService:
             # Prepare metadata for MongoDB
             file_metadata = {
                 "user_id": user_id,
+                "shop_id": shop_id,
                 "file_name": unique_filename,
                 "original_file_name": file.filename,
                 "file_url": file_url,
                 "file_size": file_size,
                 "file_type": content_type,
+                "data_purpose": data_purpose,
+                "linked_customer_file_id": linked_customer_file_id,
+                "campaign_id": resolved_campaign_id,
                 "uploaded_at": datetime.now(),
                 "b2_file_id": file_info.id_,
             }
@@ -190,6 +207,7 @@ class FileUploadService:
                 "file_name": file.filename,
                 "file_url": file_url,
                 "file_size": file_size,
+                "campaign_id": resolved_campaign_id,
                 "uploaded_at": file_metadata["uploaded_at"],
                 "user_id": user_id
             }
@@ -251,7 +269,7 @@ class FileUploadService:
         file_id: str,
         user_id: str,
         db: AsyncIOMotorDatabase
-    ) -> Dict[str, str]:
+    ) -> Dict[str, Any]:
         """
         Delete a file from Backblaze B2 and MongoDB.
         
@@ -290,13 +308,46 @@ class FileUploadService:
                 except Exception as e:
                     logger.warning(f"Could not delete file from B2: {str(e)}")
             
-            # Delete associated customer data
+            # Delete associated customer data (both by file_id and source filename for backward compatibility)
             customers_deleted = await db.customers.delete_many({
                 "user_id": user_id,
-                "source_file": file_doc["original_file_name"]
+                "$or": [
+                    {"file_id": file_id},
+                    {"source_file": file_doc["original_file_name"]}
+                ]
             })
-            
-            logger.info(f"Deleted {customers_deleted.deleted_count} customers associated with file: {file_doc['original_file_name']}")
+
+            # Delete associated campaigns, batches, and messages for this file
+            batch_docs = await db.batches.find(
+                {"user_id": user_id, "file_id": file_id},
+                {"id": 1, "_id": 0}
+            ).to_list(10000)
+            batch_ids = [b.get("id") for b in batch_docs if b.get("id")]
+
+            campaigns_deleted = await db.campaigns.delete_many({
+                "user_id": user_id,
+                "file_id": file_id
+            })
+            messages_deleted = await db.messages.delete_many({
+                "user_id": user_id,
+                "$or": [
+                    {"file_id": file_id},
+                    {"batch_id": {"$in": batch_ids}}
+                ]
+            })
+            batches_deleted = await db.batches.delete_many({
+                "user_id": user_id,
+                "file_id": file_id
+            })
+
+            logger.info(
+                "Deleted related data for file %s: customers=%s campaigns=%s batches=%s messages=%s",
+                file_id,
+                customers_deleted.deleted_count,
+                campaigns_deleted.deleted_count,
+                batches_deleted.deleted_count,
+                messages_deleted.deleted_count,
+            )
             
             # Delete from MongoDB
             await db.files.delete_one({"_id": ObjectId(file_id)})
@@ -306,7 +357,10 @@ class FileUploadService:
             return {
                 "message": "File deleted successfully",
                 "file_id": file_id,
-                "customers_deleted": customers_deleted.deleted_count
+                "customers_deleted": customers_deleted.deleted_count,
+                "campaigns_deleted": campaigns_deleted.deleted_count,
+                "batches_deleted": batches_deleted.deleted_count,
+                "messages_deleted": messages_deleted.deleted_count,
             }
             
         except HTTPException:

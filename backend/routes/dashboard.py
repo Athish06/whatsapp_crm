@@ -18,5 +18,6 @@ async def get_dashboard_stats(
 ):
     """Get dashboard statistics for the current user."""
     service = DashboardService(db)
-    stats = await service.get_stats(current_user["id"])
+    user_id = current_user.get("user_id") or current_user.get("id")
+    stats = await service.get_stats(user_id)
     return DashboardStats(**stats)
