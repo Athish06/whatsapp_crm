@@ -4,6 +4,7 @@ Shop routes for shop management, file upload, and processing.
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query
 from typing import Any, Optional
 from pydantic import BaseModel
+from datetime import datetime
 import logging
 
 from config import Database
@@ -100,6 +101,245 @@ async def delete_shop(
     service = ShopService(db)
     result = await service.delete_shop(shop_id, user_id)
     return result
+
+
+# ============ Real Customer Preview ============
+
+class PreviewRequest(BaseModel):
+    template_text: str
+    segment: Optional[str] = None
+    customer_id: Optional[str] = None
+    shop_id: Optional[str] = None
+
+
+@router.post("/{shop_id}/preview-template")
+async def preview_template(
+    shop_id: str,
+    body: PreviewRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Any = Depends(Database.get_database),
+):
+    """Hydrate a template with real customer data for live preview.
+
+    Uses customer_insights as the single source of truth for segments
+    and all 8 template variables.
+    """
+    import re
+    user_id = current_user.get("user_id") or current_user.get("id")
+
+    # Build customer query
+    cust_query = {"user_id": user_id, "shop_id": shop_id}
+    if body.segment and body.segment not in ("all", ""):
+        cust_query["segment"] = body.segment
+
+    # Fetch available customers (limit 10 for the toggle)
+    available_cursor = db.customers.find(
+        cust_query, {"_id": 0, "id": 1, "name": 1, "phone": 1, "segment": 1, "customer_id": 1}
+    ).limit(10)
+    available_customers = [c async for c in available_cursor]
+
+    if not available_customers:
+        return {
+            "hydrated_text": body.template_text,
+            "used_customer": None,
+            "available_customers": [],
+            "warning": "No customers found for this segment.",
+        }
+
+    # Pick the requested customer or the first available
+    chosen = None
+    if body.customer_id:
+        chosen_doc = await db.customers.find_one(
+            {"id": body.customer_id, "user_id": user_id, "shop_id": shop_id},
+            {"_id": 0},
+        )
+        if chosen_doc:
+            chosen = chosen_doc
+    if not chosen:
+        # Pick the first customer that has insight data (richest preview)
+        for ac in available_customers:
+            cust_id_for_lookup = ac.get("customer_id") or ac.get("id")
+            insight = await db.customer_insights.find_one(
+                {"shop_id": shop_id, "customer_id": cust_id_for_lookup}, {"_id": 0}
+            )
+            if insight and insight.get("favorite_category"):
+                chosen = await db.customers.find_one(
+                    {"id": ac["id"], "user_id": user_id}, {"_id": 0}
+                )
+                break
+        if not chosen:
+            chosen = await db.customers.find_one(
+                {"id": available_customers[0]["id"], "user_id": user_id}, {"_id": 0}
+            )
+
+    # Fetch insight data for this customer from customer_insights
+    cust_id_for_insight = chosen.get("customer_id") or chosen.get("id")
+    insight = await db.customer_insights.find_one(
+        {"shop_id": shop_id, "customer_id": cust_id_for_insight}, {"_id": 0}
+    ) or {}
+
+    # Build replacement map — the 8 smart variables
+    replacements = {
+        "customer_name": chosen.get("name", ""),
+        "segment": insight.get("segment", chosen.get("segment", "")),
+        "favorite_category": insight.get("favorite_category", ""),
+        "favorite_premium_product": insight.get("favorite_premium_product", ""),
+        "favorite_bulk_product": insight.get("favorite_bulk_product", ""),
+        "second_favorite_premium_product": insight.get("second_favorite_premium_product", ""),
+        "recently_bought_product": insight.get("recently_bought_product", ""),
+        "complementary_product": insight.get("complementary_product", ""),
+    }
+
+    # Hydrate
+    hydrated = body.template_text
+    for key, val in replacements.items():
+        hydrated = hydrated.replace("{{" + key + "}}", str(val or ""))
+
+    # Check for unresolved variables
+    unresolved = re.findall(r"\{\{(\w+)\}\}", hydrated)
+
+    return {
+        "hydrated_text": hydrated,
+        "used_customer": {
+            "customer_id": chosen.get("id"),
+            "customer_name": chosen.get("name"),
+            "segment": insight.get("segment", chosen.get("segment", "")),
+        },
+        "available_customers": [
+            {"id": c["id"], "name": c.get("name", ""), "segment": c.get("segment", "")}
+            for c in available_customers
+        ],
+        "replacements_applied": replacements,
+        "unresolved_variables": unresolved,
+        "warning": "Some variables could not be filled — customer may lack transaction data." if unresolved else None,
+    }
+
+
+# ============ Resend Failed / Unsent ============
+
+class ResendRequest(BaseModel):
+    mode: str = "failed"  # "failed" | "unsent" | "all"
+
+
+@router.post("/{shop_id}/campaigns/{campaign_id}/resend")
+async def resend_campaign_messages(
+    shop_id: str,
+    campaign_id: str,
+    body: ResendRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Any = Depends(Database.get_database),
+):
+    """Re-queue failed / unsent / all messages for a campaign.
+
+    Max 2 retries per message. After that, messages move to dead_letter status.
+    """
+    from datetime import timedelta
+    from services import BatchService
+
+    user_id = current_user.get("user_id") or current_user.get("id")
+
+    # Get batch IDs for this campaign
+    batch_ids = [
+        b["id"] async for b in db.batches.find(
+            {"campaign_id": campaign_id, "user_id": user_id}, {"_id": 0, "id": 1}
+        )
+    ]
+    if not batch_ids:
+        raise HTTPException(status_code=404, detail="No batches found for this campaign")
+
+    # Determine which statuses to re-queue
+    if body.mode == "failed":
+        target_statuses = ["failed"]
+    elif body.mode == "unsent":
+        target_statuses = ["cancelled", "unsent"]
+    else:
+        target_statuses = ["failed", "cancelled", "unsent"]
+
+    # Find eligible messages (retry_count < 2)
+    messages = await db.messages.find(
+        {
+            "batch_id": {"$in": batch_ids},
+            "status": {"$in": target_statuses},
+            "retry_count": {"$lt": 2},
+        },
+        {"_id": 0},
+    ).to_list(10000)
+
+    if not messages:
+        # Check if any are past max retries
+        dead_count = await db.messages.count_documents(
+            {"batch_id": {"$in": batch_ids}, "status": {"$in": target_statuses}, "retry_count": {"$gte": 2}}
+        )
+        return {
+            "message": "No messages eligible for resend.",
+            "requeued": 0,
+            "dead_letter": dead_count,
+        }
+
+    now = datetime.now()
+    requeued = 0
+    dead = 0
+
+    for msg in messages:
+        retry = msg.get("retry_count", 0) + 1
+        if retry > 2:
+            # Move to dead_letter
+            await db.messages.update_one(
+                {"id": msg["id"]},
+                {"$set": {"status": "dead_letter", "retry_count": retry}},
+            )
+            dead += 1
+            continue
+
+        # Re-queue
+        scheduled = now + timedelta(minutes=5)
+        await db.messages.update_one(
+            {"id": msg["id"]},
+            {"$set": {"status": "pending", "retry_count": retry, "scheduled_at": scheduled, "error": None}},
+        )
+        # Also re-create queue item
+        await db.msg_queues.update_one(
+            {"message_id": msg["id"]},
+            {
+                "$set": {
+                    "status": "pending",
+                    "scheduled_at": scheduled,
+                    "updated_at": now.isoformat(),
+                },
+                "$setOnInsert": {
+                    "id": msg["id"],
+                    "message_id": msg["id"],
+                    "user_id": user_id,
+                    "campaign_id": campaign_id,
+                    "batch_id": msg["batch_id"],
+                    "customer_id": msg.get("customer_id"),
+                    "phone_number": msg.get("phone_number"),
+                    "customer_segment": msg.get("customer_segment", "boring"),
+                    "priority": msg.get("priority", 4),
+                    "created_at": now.isoformat(),
+                },
+            },
+            upsert=True,
+        )
+        requeued += 1
+
+    # Reset the parent batches that contained failed messages back to pending
+    if requeued > 0:
+        affected_batch_ids = list({m["batch_id"] for m in messages})
+        await db.batches.update_many(
+            {"id": {"$in": affected_batch_ids}, "status": {"$in": ["failed", "completed", "cancelled"]}},
+            {"$set": {"status": "pending"}},
+        )
+        await db.campaigns.update_one(
+            {"_id": campaign_id},
+            {"$set": {"status": "pending", "updated_at": now}},
+        )
+
+    return {
+        "message": f"Re-queued {requeued} messages. {dead} moved to dead letter (max retries).",
+        "requeued": requeued,
+        "dead_letter": dead,
+    }
 
 
 # ============ Unified Upload & Process ============
@@ -255,15 +495,15 @@ async def process_shop_file(
 # ============ Helpers ============
 
 def _get_customer_required_columns():
-    """Required columns info for customer CSV."""
+    """Required columns info for customer CSV.
+    
+    In the 3-layer architecture, customer CSV only needs basic bio data.
+    RFM metrics are computed from transactions automatically.
+    """
     return [
+        {"key": "customer_id", "label": "Customer ID", "description": "Unique customer identifier — links to Transaction file"},
         {"key": "name", "label": "Customer Name", "description": "Full name of the customer"},
-        {"key": "phone", "label": "Phone Number", "description": "Contact number (with country code)"},
-        {"key": "purchase_count", "label": "Purchase Count (Frequency)", "description": "Total number of purchases — used for RFM Frequency quintile scoring"},
-        {"key": "total_spent", "label": "Total Spent (Monetary)", "description": "Total amount spent — used for RFM Monetary quintile scoring"},
-        {"key": "last_transaction_date", "label": "Last Purchase Date (Recency)", "description": "Date of last purchase (YYYY-MM-DD) — used for RFM Recency quintile scoring"},
-        {"key": "quantity", "label": "Total Item Quantity", "description": "Total items ordered — used for Bulkiness factor"},
-        {"key": "email", "label": "Email", "description": "Email address (optional)"},
+        {"key": "phone", "label": "Phone / Mobile No", "description": "Contact number (with country code)"},
     ]
 
 
@@ -274,13 +514,9 @@ def _suggest_mapping_for_type(data_type: str, columns: list) -> dict:
 
     if data_type == "customers":
         field_keywords = {
-            "name": ["name", "customer", "client", "full_name"],
-            "phone": ["phone", "mobile", "contact", "tel", "cell"],
-            "email": ["email", "mail", "e-mail"],
-            "purchase_count": ["purchase_count", "orders", "purchase", "count", "visits", "transactions", "frequency"],
-            "total_spent": ["total_spent", "total", "spent", "amount", "revenue", "spend", "monetary", "value"],
-            "last_transaction_date": ["last_transaction_date", "last_date", "last_purchase", "date", "recent", "last_date_purchased"],
-            "quantity": ["quantity", "qty", "items", "units", "total_qty", "total_quantity", "total_item_quantity"],
+            "customer_id": ["customer_id", "cust_id", "id", "customer_no", "customer_code"],
+            "name": ["name", "customer_name", "customer", "client", "full_name"],
+            "phone": ["phone", "mobile", "mobile_no", "contact", "tel", "cell"],
         }
     elif data_type == "products":
         field_keywords = {

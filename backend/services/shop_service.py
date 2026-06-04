@@ -134,12 +134,12 @@ class ShopService:
                 "file_name": latest_file["original_file_name"] if latest_file else None,
             }
 
-        # Customer segmentation data
+        # ── Customer segmentation from customer_insights (single source of truth) ──
         seg_pipeline = [
-            {"$match": {"user_id": user_id, "shop_id": shop_id}},
+            {"$match": {"shop_id": shop_id}},
             {"$group": {"_id": "$segment", "count": {"$sum": 1}}},
         ]
-        seg_cursor = self.db.customers.aggregate(seg_pipeline)
+        seg_cursor = self.db.customer_insights.aggregate(seg_pipeline)
         segment_counts = {}
         async for doc in seg_cursor:
             segment_counts[doc["_id"] or "boring"] = doc["count"]
@@ -214,11 +214,11 @@ class ShopService:
                             top_bulk = cat_df.groupby('product_name')['quantity'].sum().idxmax()
                             bulk_products_by_category[str(cat)] = top_bulk
 
-        # Customer category affinity (% of customers per category)
+        # ── Customer category affinity from customer_insights ──
         total_customers = await self.db.customers.count_documents(
             {"user_id": user_id, "shop_id": shop_id}
         )
-        behavior_count = await self.db.customer_behavior_map.count_documents(
+        insights_count = await self.db.customer_insights.count_documents(
             {"shop_id": shop_id}
         )
         category_affinity_pipeline = [
@@ -227,11 +227,11 @@ class ShopService:
             {"$group": {"_id": "$top_categories", "count": {"$sum": 1}}},
             {"$sort": {"count": -1}},
         ]
-        affinity_cursor = self.db.customer_behavior_map.aggregate(category_affinity_pipeline)
+        affinity_cursor = self.db.customer_insights.aggregate(category_affinity_pipeline)
         customer_category_pct = {}
         async for doc in affinity_cursor:
-            if behavior_count > 0:
-                customer_category_pct[doc["_id"]] = round(doc["count"] / behavior_count * 100, 1)
+            if insights_count > 0:
+                customer_category_pct[doc["_id"]] = round(doc["count"] / insights_count * 100, 1)
 
         # Live stats
         active_batches = await self.db.batches.count_documents(
@@ -320,8 +320,8 @@ class ShopService:
         products = await self.db.product_inventory.delete_many({"shop_id": shop_id})
         # Delete transactions
         transactions = await self.db.transactions.delete_many({"shop_id": shop_id})
-        # Delete behavior map
-        behavior = await self.db.customer_behavior_map.delete_many({"shop_id": shop_id})
+        # Delete customer_insights (new)
+        insights = await self.db.customer_insights.delete_many({"shop_id": shop_id})
         # Delete files
         files = await self.db.files.delete_many(
             {"user_id": user_id, "shop_id": shop_id}
@@ -341,6 +341,7 @@ class ShopService:
             "customers_deleted": customers.deleted_count,
             "products_deleted": products.deleted_count,
             "transactions_deleted": transactions.deleted_count,
+            "insights_deleted": insights.deleted_count,
             "behavior_maps_deleted": behavior.deleted_count,
             "files_deleted": files.deleted_count,
             "templates_deleted": templates.deleted_count,

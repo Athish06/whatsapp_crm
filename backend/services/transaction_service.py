@@ -1,17 +1,14 @@
 """
 Transaction service for processing transaction CSV uploads.
-Handles parsing, storage, and building the customer_behavior_map.
+Handles parsing, storage, and triggering insight recalculation.
 """
 import io
 import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, List
-from collections import defaultdict
 
 import pandas as pd
 from motor.motor_asyncio import AsyncIOMotorDatabase
-
-from utils.level2_profiler import build_customer_profiles
 
 logger = logging.getLogger(__name__)
 
@@ -43,15 +40,7 @@ class TransactionService:
     ) -> Dict[str, Any]:
         """
         Parse transaction CSV, store in transactions collection,
-        and build/update customer_behavior_map.
-
-        The behavior map stores per-customer:
-        - fav_items: top 5 most-bought product IDs
-        - recent_purchases: last 10 product IDs by date
-        - top_categories: top 3 categories by total spend
-        - total_spent: sum of all amounts
-        - total_transactions: count of transactions
-        - last_purchase_date: most recent purchase date
+        and trigger full insight recalculation (RFM + Level 2).
 
         Returns:
             Dict with transaction_count, categories_found, top_products_per_category,
@@ -126,10 +115,12 @@ class TransactionService:
             await self.db.transactions.insert_many(tx_docs)
             logger.info(f"Inserted {len(tx_docs)} transactions for shop {shop_id}")
 
-        # Build customer_behavior_map
-        await self._build_behavior_map(df, shop_id, product_map)
+        # ── Trigger full insight recalculation (RFM + Level 2) ──
+        from services.insights_service import recalculate_all_insights
+        insights_count = await recalculate_all_insights(self.db, shop_id)
+        logger.info(f"Recalculated {insights_count} customer insights after transaction upload")
 
-        # Calculate insights
+        # Calculate response insights
         categories_found = df["category"].nunique()
 
         # Top product per category (by total quantity)
@@ -157,96 +148,16 @@ class TransactionService:
             "top_products_per_category": top_per_cat,
             "customer_category_pct": cat_customer_counts,
             "unique_customers": total_unique_customers,
+            "insights_generated": insights_count,
         }
-
-    async def _build_behavior_map(
-        self, df: pd.DataFrame, shop_id: str, product_map: Dict
-    ):
-        """
-        Build/update customer_behavior_map using Level 2 behavioral profiling.
-
-        Computes per customer:
-          - favorite_category              (weighted affinity: spend 50%, freq 30%, recency 20%)
-          - favorite_premium_product       (highest-spend premium product in fav category)
-          - favorite_bulk_product          (highest total-qty bulk product)
-          - second_favorite_premium_product
-          - recently_bought_product        (most recent transaction's product)
-          - complementary_product          (most co-purchased with top premium/bulk product)
-          - category_affinity_scores       (full dict for analytics)
-          - fav_items, recent_purchases, top_categories (backward compat)
-        """
-        # Fetch full product inventory for this shop (needed for price + tags)
-        products_cursor = self.db.product_inventory.find(
-            {"shop_id": shop_id},
-            {"_id": 0, "product_id": 1, "product_name": 1, "category": 1,
-             "price": 1, "unit_price": 1, "unit": 1, "quantity_per_unit": 1},
-        )
-        products_rows = []
-        async for p in products_cursor:
-            products_rows.append(p)
-
-        if not products_rows:
-            logger.warning(f"No products found for shop {shop_id}; behavior map will have limited data.")
-
-        products_df = pd.DataFrame(products_rows) if products_rows else pd.DataFrame(
-            columns=["product_id", "product_name", "category", "price"]
-        )
-
-        # Run Level 2 profiler (pure pandas, no DB)
-        behavior_docs = build_customer_profiles(
-            tx_df=df,
-            products_df=products_df,
-            shop_id=shop_id,
-            today=pd.Timestamp.now(),
-        )
-
-        # Persist to MongoDB
-        await self.db.customer_behavior_map.delete_many({"shop_id": shop_id})
-        if behavior_docs:
-            await self.db.customer_behavior_map.insert_many(behavior_docs)
-            logger.info(f"[Level2] Stored {len(behavior_docs)} behavior profiles for shop {shop_id}")
-
 
 
 async def regenerate_level2_profiles(db: AsyncIOMotorDatabase, shop_id: str) -> int:
     """
-    On-demand re-run of Level 2 profiling from existing transactions + products.
+    On-demand re-run of full insight pipeline from existing transactions + products.
     Useful for triggering after a product catalog update without re-uploading transactions.
 
     Returns number of customer profiles generated.
     """
-    # Load transactions
-    tx_cursor = db.transactions.find({"shop_id": shop_id}, {"_id": 0})
-    tx_rows = [doc async for doc in tx_cursor]
-    if not tx_rows:
-        logger.warning(f"[Level2] No transactions found for shop {shop_id}")
-        return 0
-
-    tx_df = pd.DataFrame(tx_rows)
-    tx_df["purchase_date"] = pd.to_datetime(tx_df["purchase_date"], errors="coerce")
-    tx_df = tx_df.dropna(subset=["purchase_date"])
-
-    # Load products
-    prod_cursor = db.product_inventory.find(
-        {"shop_id": shop_id},
-        {"_id": 0, "product_id": 1, "product_name": 1, "category": 1,
-         "price": 1, "unit_price": 1, "unit": 1, "quantity_per_unit": 1},
-    )
-    prod_rows = [doc async for doc in prod_cursor]
-    products_df = pd.DataFrame(prod_rows) if prod_rows else pd.DataFrame(
-        columns=["product_id", "product_name", "category", "price"]
-    )
-
-    behavior_docs = build_customer_profiles(
-        tx_df=tx_df,
-        products_df=products_df,
-        shop_id=shop_id,
-        today=pd.Timestamp.now(),
-    )
-
-    await db.customer_behavior_map.delete_many({"shop_id": shop_id})
-    if behavior_docs:
-        await db.customer_behavior_map.insert_many(behavior_docs)
-        logger.info(f"[Level2] Regenerated {len(behavior_docs)} profiles for shop {shop_id}")
-
-    return len(behavior_docs)
+    from services.insights_service import recalculate_all_insights
+    return await recalculate_all_insights(db, shop_id)

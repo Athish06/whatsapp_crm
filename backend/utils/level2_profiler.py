@@ -44,39 +44,59 @@ def tag_premium_products(products_df: pd.DataFrame) -> pd.DataFrame:
     Mark each product as is_premium and is_luxury.
 
     Premium rule (per category):
-        threshold = mean_price + 1.8 * std_price
-        is_premium = price > threshold
+        threshold = mean_price + 1.0 * std_price (with fallbacks)
+        is_premium = price > threshold OR product_type == "premium"
 
     Luxury rule (global):
         is_luxury = price in top 5% of entire store
     """
     df = products_df.copy()
+    if df.empty:
+        df["is_premium"] = False
+        df["is_luxury"] = False
+        return df
+
     df["price"] = pd.to_numeric(df.get("price", df.get("unit_price", 0)), errors="coerce").fillna(0)
 
     # --- per-category premium threshold ---
     cat_stats = (
         df.groupby("category")["price"]
-        .agg(["mean", "std"])
-        .rename(columns={"mean": "cat_mean", "std": "cat_std"})
-        .fillna(0)
+        .agg(["mean", "std", "count"])
+        .rename(columns={"mean": "cat_mean", "std": "cat_std", "count": "cat_count"})
     )
     df = df.join(cat_stats, on="category")
-    df["premium_threshold"] = df["cat_mean"] + 1.8 * df["cat_std"]
-    df["is_premium"] = df["price"] > df["premium_threshold"]
+    
+    thresholds = []
+    for _, row in df.iterrows():
+        mean = row["cat_mean"]
+        std = row["cat_std"]
+        count = row["cat_count"]
+        
+        # Fallback: if category has only 1 item or prices are identical (std = 0)
+        if pd.isna(std) or std == 0 or count <= 1:
+            thresholds.append(mean * 1.15)
+        else:
+            thresholds.append(mean + 1.0 * std)
+            
+    df["premium_threshold"] = thresholds
+    df["is_premium"] = (df["price"] > df["premium_threshold"]) | (df.get("product_type") == "premium")
 
     # --- global luxury: top 5% ---
     luxury_cutoff = df["price"].quantile(0.95)
     df["is_luxury"] = df["price"] >= luxury_cutoff
 
-    return df.drop(columns=["cat_mean", "cat_std", "premium_threshold"], errors="ignore")
+    return df.drop(columns=["cat_mean", "cat_std", "cat_count", "premium_threshold"], errors="ignore")
 
 
 def tag_bulk_products(products_df: pd.DataFrame) -> pd.DataFrame:
     """
     Mark each product as is_bulk using a hybrid rule:
-        is_bulk = keyword_match OR unit_is_bulk OR quantity_per_unit > 5
+        is_bulk = keyword_match OR unit_is_bulk OR quantity_per_unit > 5 OR product_type == "bulk"
     """
     df = products_df.copy()
+    if df.empty:
+        df["is_bulk"] = False
+        return df
     name_col = _find_col(df, ["product_name", "name", "item_name"], "")
     unit_col = _find_col(df, ["unit", "uom", "unit_of_measure"], "")
     qty_col = _find_col(df, ["quantity_per_unit", "qty_per_unit", "units_per_pack"], "")
@@ -84,9 +104,12 @@ def tag_bulk_products(products_df: pd.DataFrame) -> pd.DataFrame:
     name_bulk = df[name_col].astype(str).str.contains(BULK_KEYWORDS) if name_col else pd.Series(False, index=df.index)
     unit_bulk = df[unit_col].astype(str).str.contains(BULK_UNIT_KEYWORDS) if unit_col else pd.Series(False, index=df.index)
     qty_bulk = (pd.to_numeric(df[qty_col], errors="coerce").fillna(0) > 5) if qty_col else pd.Series(False, index=df.index)
+    
+    prod_type_bulk = (df.get("product_type") == "bulk") if "product_type" in df.columns else pd.Series(False, index=df.index)
 
-    df["is_bulk"] = name_bulk | unit_bulk | qty_bulk
+    df["is_bulk"] = name_bulk | unit_bulk | qty_bulk | prod_type_bulk
     return df
+
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +258,7 @@ def _fallback_premium_for_category(
     all_tx_df: pd.DataFrame,
     product_flags: Dict[str, Dict],
 ) -> Optional[str]:
-    """Return the global best-selling premium product in cat (fallback)."""
+    """Return the product_id of the global best-selling premium product in cat (fallback)."""
     if cat is None or all_tx_df.empty:
         return None
 
@@ -246,7 +269,7 @@ def _fallback_premium_for_category(
         return None
 
     top_pid = prem_tx.groupby("product_id")["amount"].sum().idxmax()
-    return product_flags.get(top_pid, {}).get("product_name", top_pid)
+    return top_pid
 
 
 def _fallback_bulk_global(
@@ -355,7 +378,29 @@ def build_customer_profiles(
             fav_prem_name = product_flags.get(fav_prem_pid, {}).get("product_name", fav_prem_pid)
         else:
             # Fallback: global best premium in favorite category
-            fav_prem_name = _fallback_premium_for_category(favorite_category, all_tx_df, product_flags)
+            fav_prem_pid = _fallback_premium_for_category(favorite_category, all_tx_df, product_flags)
+            if fav_prem_pid:
+                fav_prem_name = product_flags.get(fav_prem_pid, {}).get("product_name", fav_prem_pid)
+
+        # Fallback if no premium product in favorite category exists
+        if fav_prem_name is None:
+            # Try global premium fallback across the entire shop
+            global_prem_tx = all_tx_df[all_tx_df["product_id"].map(lambda p: product_flags.get(p, {}).get("is_premium", False))]
+            if not global_prem_tx.empty:
+                fav_prem_pid = global_prem_tx.groupby("product_id")["amount"].sum().idxmax()
+                fav_prem_name = product_flags.get(fav_prem_pid, {}).get("product_name", fav_prem_pid)
+            
+            # Ultimate fallback: overall best-selling product in their favorite category (even if not premium)
+            if fav_prem_name is None and favorite_category:
+                cat_tx = all_tx_df[all_tx_df["category"] == favorite_category]
+                if not cat_tx.empty:
+                    fav_prem_pid = cat_tx.groupby("product_id")["amount"].sum().idxmax()
+                    fav_prem_name = product_flags.get(fav_prem_pid, {}).get("product_name", fav_prem_pid)
+            
+            # Ultimate ultimate fallback: overall best-selling product across the entire store
+            if fav_prem_name is None and not all_tx_df.empty:
+                fav_prem_pid = all_tx_df.groupby("product_id")["amount"].sum().idxmax()
+                fav_prem_name = product_flags.get(fav_prem_pid, {}).get("product_name", fav_prem_pid)
 
         # ---- Second favorite premium ----
         second_prem_name: Optional[str] = None
@@ -370,6 +415,35 @@ def build_customer_profiles(
                 if not other_prem.empty:
                     s_pid = other_prem.groupby("product_id")["amount"].sum().idxmax()
                     second_prem_name = product_flags.get(s_pid, {}).get("product_name", s_pid)
+
+        if second_prem_name is None:
+            # Fallback to the second global best-selling premium product in their favorite category
+            if favorite_category:
+                cat_tx = all_tx_df[all_tx_df["category"] == favorite_category]
+                prem_cat_tx = cat_tx[cat_tx["product_id"].map(lambda p: product_flags.get(p, {}).get("is_premium", False))]
+                if fav_prem_pid:
+                    prem_cat_tx = prem_cat_tx[prem_cat_tx["product_id"] != fav_prem_pid]
+                if not prem_cat_tx.empty:
+                    top_pid = prem_cat_tx.groupby("product_id")["amount"].sum().idxmax()
+                    second_prem_name = product_flags.get(top_pid, {}).get("product_name", top_pid)
+            
+            # If STILL None, fallback to the second global best-selling premium product across the store
+            if second_prem_name is None:
+                global_prem_tx = all_tx_df[all_tx_df["product_id"].map(lambda p: product_flags.get(p, {}).get("is_premium", False))]
+                if fav_prem_pid:
+                    global_prem_tx = global_prem_tx[global_prem_tx["product_id"] != fav_prem_pid]
+                if not global_prem_tx.empty:
+                    top_pid = global_prem_tx.groupby("product_id")["amount"].sum().idxmax()
+                    second_prem_name = product_flags.get(top_pid, {}).get("product_name", top_pid)
+
+            # Ultimate fallback if NO premium products exist in the database
+            if second_prem_name is None and not all_tx_df.empty:
+                global_tx = all_tx_df
+                if fav_prem_pid:
+                    global_tx = global_tx[global_tx["product_id"] != fav_prem_pid]
+                if not global_tx.empty:
+                    top_pid = global_tx.groupby("product_id")["amount"].sum().idxmax()
+                    second_prem_name = product_flags.get(top_pid, {}).get("product_name", top_pid)
 
         # ---- Favorite bulk product ----
         bulk_name = _best_bulk(cust_df, product_flags)
@@ -390,7 +464,29 @@ def build_customer_profiles(
             if not bulk_rows.empty:
                 anchor_pid = bulk_rows.groupby("product_id")["quantity"].sum().idxmax()
 
+        # If STILL None, use their most purchased product as anchor!
+        if anchor_pid is None and not cust_df.empty:
+            anchor_pid = cust_df.groupby("product_id")["quantity"].sum().idxmax()
+
         complementary_name = _complementary_product(cust_df, anchor_pid, all_tx_df, product_flags)
+        if complementary_name is None:
+            # Fallback to the overall best-selling product in their favorite category (excluding anchor)
+            if favorite_category:
+                cat_tx = all_tx_df[all_tx_df["category"] == favorite_category]
+                if anchor_pid:
+                    cat_tx = cat_tx[cat_tx["product_id"] != anchor_pid]
+                if not cat_tx.empty:
+                    top_pid = cat_tx.groupby("product_id")["quantity"].sum().idxmax()
+                    complementary_name = product_flags.get(top_pid, {}).get("product_name", top_pid)
+            
+            # If STILL None, fallback to global top product in the shop (excluding anchor)
+            if complementary_name is None and not all_tx_df.empty:
+                global_tx = all_tx_df
+                if anchor_pid:
+                    global_tx = global_tx[global_tx["product_id"] != anchor_pid]
+                if not global_tx.empty:
+                    top_pid = global_tx.groupby("product_id")["quantity"].sum().idxmax()
+                    complementary_name = product_flags.get(top_pid, {}).get("product_name", top_pid)
 
         # ---- Fav items (top 5 by total quantity, backward compat) ----
         fav_items_series = cust_df.groupby("product_id")["quantity"].sum().sort_values(ascending=False).head(5)

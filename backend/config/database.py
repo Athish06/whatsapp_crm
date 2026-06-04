@@ -134,13 +134,15 @@ class Database:
                 name="unique_shop_product"
             )
             
-            # NEW: customer_behavior_map collection
-            await db.customer_behavior_map.create_index([("shop_id", 1)])
-            await db.customer_behavior_map.create_index([("customer_id", 1)])
-            await db.customer_behavior_map.create_index(
+
+            # NEW: customer_insights collection (3-layer architecture cache)
+            await db.customer_insights.create_index([("shop_id", 1)])
+            await db.customer_insights.create_index([("customer_id", 1)])
+            await db.customer_insights.create_index([("segment", 1)])
+            await db.customer_insights.create_index(
                 [("shop_id", 1), ("customer_id", 1)],
                 unique=True,
-                name="unique_shop_customer_behavior"
+                name="unique_shop_customer_insight"
             )
 
             # NEW: transactions collection
