@@ -185,14 +185,16 @@ class BatchService:
             }
             await self.db.campaigns.insert_one(campaign_doc)
 
-        # Load behavior maps if AI mode is on
+        # Load behavior maps (from customer_insights) if AI mode is on
         behavior_map = {}
-        if ai_mode and shop_id:
-            behavior_cursor = self.db.customer_behavior_map.find(
+        insights_segment_map = {}
+        if shop_id:
+            insight_cursor = self.db.customer_insights.find(
                 {"shop_id": shop_id}, {"_id": 0}
             )
-            async for bm in behavior_cursor:
-                behavior_map[bm["customer_id"]] = bm
+            async for ins in insight_cursor:
+                behavior_map[ins["customer_id"]] = ins
+                insights_segment_map[ins["customer_id"]] = ins.get("segment", "boring")
         
         # Split into batches
         total_batches = math.ceil(len(customers) / batch_size)
@@ -282,6 +284,10 @@ class BatchService:
                     "boring": 4                  # Boring - low priority
                 }
                 customer_segment = customer.get("segment", "boring").lower()
+                # If segment is default/missing, try to get from insights
+                if customer_segment == "boring" and insights_segment_map:
+                    cust_key = customer.get("customer_id") or customer.get("phone", "")
+                    customer_segment = insights_segment_map.get(cust_key, customer_segment)
                 message_priority = segment_priority_map.get(customer_segment, 4)
                 
                 message_doc = {

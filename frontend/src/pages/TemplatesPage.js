@@ -36,46 +36,86 @@ const segments = [
   { value: 'boring',         label: 'Boring',         icon: User,          color: '#6B7280' },
 ];
 
-/* ── Live WhatsApp Preview ── */
-const WhatsAppPreview = ({ content }) => {
-  let preview = content || '';
-  SMART_VARS.forEach(v => {
-    preview = preview.replace(new RegExp(`\\{\\{${v.key}\\}\\}`, 'g'), `*${v.example}*`);
-  });
-  // Bold markdown
-  preview = preview.split('\n').map((line, i) => {
+/* ── WhatsApp Bubble (renders hydrated text) ── */
+const WhatsAppBubble = ({ text }) => {
+  if (!text) return <span className="text-white/40 italic">Start typing to preview…</span>;
+  const lines = text.split('\n').map((line, i) => {
     const parts = line.split(/(\*[^*]+\*)/g);
     return (
       <span key={i}>
         {parts.map((p, j) =>
-          p.startsWith('*') && p.endsWith('*')
-            ? <strong key={j}>{p.slice(1, -1)}</strong>
-            : p
+          p.startsWith('*') && p.endsWith('*') ? <strong key={j}>{p.slice(1, -1)}</strong> : p
         )}
         <br />
       </span>
     );
   });
-  return (
-    <div className="bg-[#0B141A] rounded-xl p-4 border border-[#2E2E2E]" style={{
-      backgroundImage: "url(\"data:image/svg+xml,%3Csvg width='40' height='40' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 38.59l2.83-2.83 1.41 1.41L1.41 40H0v-1.41z' fill='%231a2c38' fill-opacity='0.4'/%3E%3C/svg%3E\")"
-    }}>
-      <div className="max-w-[280px]">
-        <div className="relative bg-[#005C4B] text-white text-sm px-4 py-3 rounded-xl rounded-tl-sm shadow-lg" style={{ whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
-          {preview.length > 0 ? preview : <span className="text-white/40 italic">Start typing to preview…</span>}
-          <div className="text-[10px] text-white/50 text-right mt-1">Preview ✓✓</div>
-          <div className="absolute top-0 -left-2 w-0 h-0 border-t-[10px] border-t-[#005C4B] border-l-[10px] border-l-transparent" />
-        </div>
-      </div>
-    </div>
-  );
+  return <>{lines}</>;
 };
 
-/* ── Template Form ── */
+/* ── Template Form (with real customer preview) ── */
 const TemplateForm = ({ initial, onSave, onCancel, saving }) => {
   const [form, setForm] = useState(initial || { name: '', content: '', segment: 'all' });
   const [showPreview, setShowPreview] = useState(true);
   const textareaRef = useRef(null);
+
+  // Real preview state
+  const [shops, setShops] = useState([]);
+  const [selectedShop, setSelectedShop] = useState('');
+  const [previewData, setPreviewData] = useState(null);
+  const [availableCustomers, setAvailableCustomers] = useState([]);
+  const [selectedCustomerId, setSelectedCustomerId] = useState('');
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewWarning, setPreviewWarning] = useState('');
+
+  // Load shops once
+  useEffect(() => {
+    const loadShops = async () => {
+      try {
+        const { shopsAPI } = await import('../lib/api');
+        const res = await shopsAPI.list();
+        const list = res.data.shops || [];
+        setShops(list);
+        if (list.length > 0) setSelectedShop(list[0].id);
+      } catch { /* ignore */ }
+    };
+    loadShops();
+  }, []);
+
+  // Fetch preview when shop / segment / content / customer changes
+  useEffect(() => {
+    if (!selectedShop || !form.content) { setPreviewData(null); return; }
+    const timeout = setTimeout(async () => {
+      setPreviewLoading(true);
+      try {
+        const { shopsAPI } = await import('../lib/api');
+        const res = await shopsAPI.previewTemplate(selectedShop, {
+          template_text: form.content,
+          segment: form.segment !== 'all' ? form.segment : '',
+          customer_id: selectedCustomerId || undefined,
+        });
+        const d = res.data;
+        setPreviewData(d);
+        setAvailableCustomers(d.available_customers || []);
+        if (!selectedCustomerId && d.used_customer?.customer_id) {
+          setSelectedCustomerId(d.used_customer.customer_id);
+        }
+        setPreviewWarning(d.warning || '');
+      } catch { setPreviewData(null); setPreviewWarning('Preview unavailable'); }
+      finally { setPreviewLoading(false); }
+    }, 600); // debounce
+    return () => clearTimeout(timeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedShop, form.content, form.segment, selectedCustomerId]);
+
+  // Fallback: if no shop selected, use dummy example preview
+  const fallbackPreview = (() => {
+    let t = form.content || '';
+    SMART_VARS.forEach(v => { t = t.replace(new RegExp(`\\{\\{${v.key}\\}\\}`, 'g'), v.example); });
+    return t;
+  })();
+
+  const displayText = previewData?.hydrated_text || fallbackPreview;
 
   const insertVar = (key) => {
     const ta = textareaRef.current;
@@ -85,6 +125,68 @@ const TemplateForm = ({ initial, onSave, onCancel, saving }) => {
     setForm(f => ({ ...f, content: next }));
     setTimeout(() => { ta.focus(); ta.setSelectionRange(s + key.length + 4, s + key.length + 4); }, 0);
   };
+
+  /* ── Preview Widget ── */
+  const PreviewWidget = () => (
+    <div className="space-y-3">
+      {/* Shop selector */}
+      <div className="flex items-center gap-2">
+        <select value={selectedShop} onChange={e => { setSelectedShop(e.target.value); setSelectedCustomerId(''); }}
+          className="flex-1 bg-[#121212] border border-[#2E2E2E] rounded-lg px-2 py-1.5 text-xs outline-none">
+          <option value="">Select shop for preview…</option>
+          {shops.map(s => <option key={s.id} value={s.id}>{s.shop_name}</option>)}
+        </select>
+      </div>
+
+      {/* Customer toggle */}
+      {availableCustomers.length > 0 && (
+        <div>
+          <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Previewing as:</p>
+          <select value={selectedCustomerId} onChange={e => setSelectedCustomerId(e.target.value)}
+            className="w-full bg-[#121212] border border-[#2E2E2E] rounded-lg px-2 py-1.5 text-xs outline-none">
+            {availableCustomers.map(c => (
+              <option key={c.id} value={c.id}>{c.name} ({c.segment})</option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {/* Warning */}
+      {previewWarning && (
+        <div className="text-[10px] bg-yellow-500/10 text-yellow-400 border border-yellow-500/20 rounded-lg px-2 py-1.5">
+          ⚠ {previewWarning}
+        </div>
+      )}
+
+      {/* Customer badge */}
+      {previewData?.used_customer && (
+        <div className="flex items-center gap-2 text-[10px]">
+          <div className="w-5 h-5 rounded-full bg-[#3ECF8E]/20 flex items-center justify-center text-[#3ECF8E] font-bold">
+            {previewData.used_customer.customer_name?.charAt(0) || '?'}
+          </div>
+          <span className="text-white font-medium">{previewData.used_customer.customer_name}</span>
+          <span className="text-muted-foreground">· {previewData.used_customer.segment}</span>
+        </div>
+      )}
+
+      {/* WhatsApp bubble */}
+      <div className="bg-[#0B141A] rounded-xl p-4 border border-[#2E2E2E]" style={{
+        backgroundImage: "url(\"data:image/svg+xml,%3Csvg width='40' height='40' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 38.59l2.83-2.83 1.41 1.41L1.41 40H0v-1.41z' fill='%231a2c38' fill-opacity='0.4'/%3E%3C/svg%3E\")"
+      }}>
+        <div className="max-w-[280px]">
+          <div className="relative bg-[#005C4B] text-white text-sm px-4 py-3 rounded-xl rounded-tl-sm shadow-lg" style={{ whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+            {previewLoading
+              ? <span className="text-white/40 animate-pulse">Loading real preview…</span>
+              : <WhatsAppBubble text={displayText} />}
+            <div className="text-[10px] text-white/50 text-right mt-1">
+              {previewData ? 'Real Data ✓✓' : 'Example ✓✓'}
+            </div>
+            <div className="absolute top-0 -left-2 w-0 h-0 border-t-[10px] border-t-[#005C4B] border-l-[10px] border-l-transparent" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -149,8 +251,8 @@ const TemplateForm = ({ initial, onSave, onCancel, saving }) => {
         {/* Preview (inline on mobile) */}
         {showPreview && (
           <div className="lg:hidden">
-            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Live Preview</p>
-            <WhatsAppPreview content={form.content} />
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Real Customer Preview</p>
+            <PreviewWidget />
           </div>
         )}
 
@@ -189,11 +291,11 @@ const TemplateForm = ({ initial, onSave, onCancel, saving }) => {
           </div>
         </div>
 
-        {/* Live preview (desktop) */}
+        {/* Live preview (desktop) — Real customer data */}
         {showPreview && (
           <div className="hidden lg:block">
-            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Live Preview</p>
-            <WhatsAppPreview content={form.content} />
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Real Customer Preview</p>
+            <PreviewWidget />
           </div>
         )}
       </div>

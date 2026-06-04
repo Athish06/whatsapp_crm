@@ -9,6 +9,7 @@ from services.dashboard_service import DashboardService
 from services.shop_service import ShopService
 from services.product_service import ProductService
 from services.transaction_service import TransactionService
+from services.insights_service import recalculate_all_insights, migrate_behavior_to_insights
 
 __all__ = [
     "AuthService",
@@ -19,4 +20,6 @@ __all__ = [
     "ShopService",
     "ProductService",
     "TransactionService",
+    "recalculate_all_insights",
+    "migrate_behavior_to_insights",
 ]

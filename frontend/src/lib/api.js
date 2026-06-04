@@ -34,6 +34,8 @@ export const shopsAPI = {
   getDetail: (shopId) => api.get(`/shops/${shopId}`),
   deleteCampaign: (shopId) => api.delete(`/shops/${shopId}/campaign`),
   deleteShop: (shopId) => api.delete(`/shops/${shopId}`),
+  previewTemplate: (shopId, data) => api.post(`/shops/${shopId}/preview-template`, data),
+  resendCampaign: (shopId, campaignId, mode) => api.post(`/shops/${shopId}/campaigns/${campaignId}/resend`, { mode }),
   upload: (shopId, dataType, file) => {
     const formData = new FormData();
     formData.append('file', file);

@@ -1,25 +1,25 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Activity, CheckCircle, XCircle, Pause, Play, Square, RefreshCw, Filter, Clock, Users, Zap, Crown, AlertTriangle, Package, User, TrendingUp } from 'lucide-react';
-import { batchesAPI } from '../lib/api';
+import { Activity, CheckCircle, XCircle, Square, RefreshCw, Clock, Users, Zap, Crown, AlertTriangle, Package, User, TrendingUp, RotateCcw, Store, Filter } from 'lucide-react';
+import { batchesAPI, shopsAPI } from '../lib/api';
 import { toast } from 'sonner';
 
 /* ── Segment config ── */
 const SEG = {
-  vip:            { label: 'VIP Champions',   color: '#F59E0B', Icon: Crown },
-  at_risk:        { label: 'At-Risk',          color: '#EF4444', Icon: AlertTriangle },
-  potential_bulk: { label: 'Potential (Bulk)', color: '#8B5CF6', Icon: Package },
+  vip:            { label: 'VIP Champions',    color: '#F59E0B', Icon: Crown },
+  at_risk:        { label: 'At-Risk',           color: '#EF4444', Icon: AlertTriangle },
+  potential_bulk: { label: 'Potential (Bulk)',  color: '#8B5CF6', Icon: Package },
   loyal_frequent: { label: 'Loyal (Frequent)', color: '#3B82F6', Icon: Zap },
-  boring:         { label: 'Boring / New',     color: '#6B7280', Icon: User },
+  boring:         { label: 'Boring / New',      color: '#6B7280', Icon: User },
 };
 
 const STATUS_COLORS = {
-  pending:    { bg: 'bg-yellow-500/10', text: 'text-yellow-400', border: 'border-yellow-500/30', dot: '#F59E0B' },
-  sending:    { bg: 'bg-blue-500/10',   text: 'text-blue-400',   border: 'border-blue-500/30',   dot: '#3B82F6' },
-  in_progress:{ bg: 'bg-blue-500/10',  text: 'text-blue-400',   border: 'border-blue-500/30',   dot: '#3B82F6' },
-  completed:  { bg: 'bg-green-500/10', text: 'text-green-400',  border: 'border-green-500/30',  dot: '#3ECF8E' },
-  failed:     { bg: 'bg-red-500/10',   text: 'text-red-400',    border: 'border-red-500/30',    dot: '#EF4444' },
-  paused:     { bg: 'bg-gray-500/10',  text: 'text-gray-400',   border: 'border-gray-500/30',   dot: '#6B7280' },
-  stopped:    { bg: 'bg-red-900/20',   text: 'text-red-300',    border: 'border-red-500/20',    dot: '#F87171' },
+  pending:     { bg: 'bg-yellow-500/10', text: 'text-yellow-400', border: 'border-yellow-500/30', dot: '#F59E0B' },
+  sending:     { bg: 'bg-blue-500/10',   text: 'text-blue-400',   border: 'border-blue-500/30',   dot: '#3B82F6' },
+  in_progress: { bg: 'bg-blue-500/10',   text: 'text-blue-400',   border: 'border-blue-500/30',   dot: '#3B82F6' },
+  completed:   { bg: 'bg-green-500/10',  text: 'text-green-400',  border: 'border-green-500/30',  dot: '#3ECF8E' },
+  failed:      { bg: 'bg-red-500/10',    text: 'text-red-400',    border: 'border-red-500/30',    dot: '#EF4444' },
+  paused:      { bg: 'bg-gray-500/10',   text: 'text-gray-400',   border: 'border-gray-500/30',   dot: '#6B7280' },
+  stopped:     { bg: 'bg-red-900/20',    text: 'text-red-300',    border: 'border-red-500/20',    dot: '#F87171' },
 };
 
 /* ── Progress Bar ── */
@@ -33,27 +33,37 @@ const Bar = ({ value, color, animated }) => (
 );
 
 /* ── Campaign Card ── */
-const CampaignCard = ({ campaign, onStop, onRefresh }) => {
+const CampaignCard = ({ campaign, onRefresh }) => {
   const [stopping, setStopping] = useState(false);
-  const total = campaign.total_customers || 1;
-  const sent  = campaign.live_sent ?? campaign.messages_sent ?? 0;
-  const failed= campaign.live_failed ?? campaign.messages_failed ?? 0;
-  const pct   = Math.round((sent / total) * 100);
+  const [resending, setResending] = useState(false);
 
-  const status  = campaign.status || 'pending';
-  const sc      = STATUS_COLORS[status] || STATUS_COLORS.pending;
-  const isActive= ['pending', 'sending', 'in_progress'].includes(status);
-  const segStats= campaign.segment_stats || {};
+  const total  = campaign.total_customers || 1;
+  const sent   = campaign.live_sent ?? campaign.messages_sent ?? 0;
+  const failed = campaign.live_failed ?? campaign.messages_failed ?? 0;
+  const pct    = Math.round((sent / total) * 100);
+
+  const status   = campaign.status || 'pending';
+  const sc       = STATUS_COLORS[status] || STATUS_COLORS.pending;
+  const isActive = ['pending', 'sending', 'in_progress'].includes(status);
+  const isDone   = ['completed', 'failed', 'stopped'].includes(status);
+  const segStats = campaign.segment_stats || {};
 
   const handleStop = async () => {
-    if (!window.confirm('Emergency stop? Current batch finishes; all future batches will be cancelled.')) return;
+    if (!window.confirm('Emergency stop? Current batch finishes; all future batches cancelled.')) return;
     setStopping(true);
-    try {
-      await batchesAPI.stopCampaign(campaign._id);
-      toast.success('Campaign stopped');
-      onRefresh();
-    } catch { toast.error('Failed to stop campaign'); }
+    try { await batchesAPI.stopCampaign(campaign._id); toast.success('Campaign stopped'); onRefresh(); }
+    catch { toast.error('Failed to stop'); }
     finally { setStopping(false); }
+  };
+
+  const handleResend = async (mode) => {
+    setResending(true);
+    try {
+      const res = await shopsAPI.resendCampaign(campaign.shop_id, campaign._id, mode);
+      toast.success(res.data.message || `Re-queued ${res.data.requeued} messages`);
+      onRefresh();
+    } catch { toast.error('Resend failed'); }
+    finally { setResending(false); }
   };
 
   return (
@@ -67,17 +77,15 @@ const CampaignCard = ({ campaign, onStop, onRefresh }) => {
           </div>
           <p className="text-xs text-muted-foreground">
             {new Date(campaign.created_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}
-            {campaign.shop_id && <span className="ml-2 text-[#3ECF8E]/60">· Shop</span>}
           </p>
         </div>
-        <div className="flex items-center gap-2 ml-3">
+        <div className="flex items-center gap-2 ml-3 flex-shrink-0">
           <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${sc.bg} ${sc.text} ${sc.border}`}>
             {status.replace('_', ' ')}
           </span>
           {isActive && (
             <button onClick={handleStop} disabled={stopping}
-              className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-red-400 border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 rounded-lg transition-colors disabled:opacity-50"
-              title="Emergency Stop">
+              className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-red-400 border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 rounded-lg transition-colors disabled:opacity-50">
               <Square className="w-3 h-3" />{stopping ? '…' : 'Stop'}
             </button>
           )}
@@ -88,21 +96,21 @@ const CampaignCard = ({ campaign, onStop, onRefresh }) => {
       <div className="mb-4">
         <div className="flex justify-between text-sm mb-1.5">
           <span className="text-muted-foreground">Overall Progress</span>
-          <span className="font-mono font-semibold">{sent} / {total} <span className="text-muted-foreground text-xs">({pct}%)</span></span>
+          <span className="font-mono font-semibold">{sent}/{total} <span className="text-muted-foreground text-xs">({pct}%)</span></span>
         </div>
         <Bar value={pct} color={isActive ? '#3B82F6' : '#3ECF8E'} animated={isActive} />
-        <div className="flex gap-4 mt-2 text-xs text-muted-foreground">
+        <div className="flex gap-4 mt-2 text-xs text-muted-foreground flex-wrap">
           <span className="flex items-center gap-1"><CheckCircle className="w-3 h-3 text-[#3ECF8E]" />{sent} sent</span>
           <span className="flex items-center gap-1"><XCircle className="w-3 h-3 text-red-400" />{failed} failed</span>
-          <span className="flex items-center gap-1"><Clock className="w-3 h-3 text-yellow-400" />{(campaign.live_pending ?? 0)} pending</span>
+          <span className="flex items-center gap-1"><Clock className="w-3 h-3 text-yellow-400" />{campaign.live_pending ?? 0} pending</span>
           <span className="ml-auto"><strong>{campaign.completed_batches ?? 0}</strong>/{campaign.total_batches ?? '?'} batches</span>
         </div>
       </div>
 
       {/* Per-segment breakdown */}
       {Object.keys(segStats).length > 0 && (
-        <div className="border-t border-[#2E2E2E] pt-3 space-y-2">
-          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">Segment Breakdown</p>
+        <div className="border-t border-[#2E2E2E] pt-3 space-y-2 mb-4">
+          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Segment Breakdown</p>
           {Object.entries(segStats).map(([seg, stats]) => {
             const cfg = SEG[seg] || { label: seg, color: '#6B7280', Icon: Users };
             const { Icon } = cfg;
@@ -110,15 +118,33 @@ const CampaignCard = ({ campaign, onStop, onRefresh }) => {
               <div key={seg} className="flex items-center gap-2 text-xs">
                 <Icon className="w-3 h-3 flex-shrink-0" style={{ color: cfg.color }} />
                 <span className="w-28 truncate text-muted-foreground">{cfg.label}</span>
-                <div className="flex-1">
-                  <Bar value={stats.pct} color={cfg.color} animated={isActive} />
-                </div>
-                <span className="w-20 text-right font-mono text-muted-foreground">
-                  {stats.sent}/{stats.total} ({stats.pct}%)
-                </span>
+                <div className="flex-1"><Bar value={stats.pct} color={cfg.color} animated={isActive} /></div>
+                <span className="w-20 text-right font-mono text-muted-foreground">{stats.sent}/{stats.total}</span>
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Resend buttons — only when campaign is done and has failures */}
+      {isDone && (failed > 0 || status === 'stopped') && (
+        <div className="border-t border-[#2E2E2E] pt-3 flex flex-wrap gap-2">
+          {failed > 0 && (
+            <button onClick={() => handleResend('failed')} disabled={resending}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-red-500/10 text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/20 transition-colors disabled:opacity-50">
+              <RotateCcw className="w-3 h-3" />Resend Failed ({failed})
+            </button>
+          )}
+          {status === 'stopped' && (
+            <button onClick={() => handleResend('unsent')} disabled={resending}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-yellow-500/10 text-yellow-400 border border-yellow-500/30 rounded-lg hover:bg-yellow-500/20 transition-colors disabled:opacity-50">
+              <RotateCcw className="w-3 h-3" />Resend Unsent
+            </button>
+          )}
+          <button onClick={() => handleResend('all')} disabled={resending}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-[#3ECF8E]/10 text-[#3ECF8E] border border-[#3ECF8E]/30 rounded-lg hover:bg-[#3ECF8E]/20 transition-colors disabled:opacity-50">
+            <RotateCcw className="w-3 h-3" />Resend All
+          </button>
         </div>
       )}
     </div>
@@ -127,11 +153,28 @@ const CampaignCard = ({ campaign, onStop, onRefresh }) => {
 
 /* ── Main Monitor Page ── */
 const BatchMonitorPage = () => {
-  const [campaigns, setCampaigns] = useState([]);
-  const [batches,   setBatches]   = useState([]);
-  const [loading,   setLoading]   = useState(true);
-  const [filter,    setFilter]    = useState('all'); // all | active | completed
-  const [lastRefresh, setLastRefresh] = useState(null);
+  const [shops,        setShops]        = useState([]);
+  const [selectedShop, setSelectedShop] = useState('');
+  const [campaigns,    setCampaigns]    = useState([]);
+  const [batches,      setBatches]      = useState([]);
+  const [loading,      setLoading]      = useState(true);
+  const [filter,       setFilter]       = useState('all');
+  const [lastRefresh,  setLastRefresh]  = useState(null);
+  const [spinning,     setSpinning]     = useState(false);
+
+  // Load shops once
+  useEffect(() => {
+    const loadShops = async () => {
+      try {
+        const res = await shopsAPI.list();
+        const list = res.data.shops || [];
+        setShops(list);
+        if (list.length > 0 && !selectedShop) setSelectedShop(list[0].id);
+      } catch { /* ignore */ }
+    };
+    loadShops();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -142,30 +185,42 @@ const BatchMonitorPage = () => {
       setCampaigns(cRes.data.campaigns || []);
       setBatches(bRes.data.batches || []);
       setLastRefresh(new Date());
-    } catch (err) {
-      console.error('Monitor load error:', err);
-    } finally {
-      setLoading(false);
-    }
+    } catch (err) { console.error('Monitor load error:', err); }
+    finally { setLoading(false); }
   }, []);
 
-  // Poll every 8 seconds while active campaigns exist
+  // Poll every 8s
   useEffect(() => {
     load();
-    const interval = setInterval(load, 8000);
-    return () => clearInterval(interval);
+    const iv = setInterval(load, 8000);
+    return () => clearInterval(iv);
   }, [load]);
 
-  const filtered = campaigns.filter(c => {
+  const handleRefresh = async () => {
+    setSpinning(true);
+    await load();
+    setTimeout(() => setSpinning(false), 600);
+    toast.success('Refreshed');
+  };
+
+  // Filter by shop + status tab
+  const shopCampaigns = selectedShop
+    ? campaigns.filter(c => c.shop_id === selectedShop)
+    : campaigns;
+
+  const shopBatches = selectedShop
+    ? batches.filter(b => b.shop_id === selectedShop)
+    : batches;
+
+  const filtered = shopCampaigns.filter(c => {
     if (filter === 'active')    return ['pending','sending','in_progress'].includes(c.status);
     if (filter === 'completed') return ['completed','failed','stopped'].includes(c.status);
     return true;
   });
 
-  const activeBatches = batches.filter(b => ['pending','scheduled','sending'].includes(b.status));
-
-  const totalSent  = campaigns.reduce((a, c) => a + (c.live_sent  ?? c.messages_sent  ?? 0), 0);
-  const totalFailed= campaigns.reduce((a, c) => a + (c.live_failed?? c.messages_failed?? 0), 0);
+  const activeBatches = shopBatches.filter(b => ['pending','scheduled','sending'].includes(b.status));
+  const totalSent   = shopCampaigns.reduce((a, c) => a + (c.live_sent   ?? c.messages_sent   ?? 0), 0);
+  const totalFailed = shopCampaigns.reduce((a, c) => a + (c.live_failed ?? c.messages_failed ?? 0), 0);
 
   return (
     <div className="p-8 space-y-8 max-w-6xl mx-auto">
@@ -174,22 +229,38 @@ const BatchMonitorPage = () => {
         <div>
           <h1 className="text-4xl font-bold mb-1" style={{ fontFamily: 'Chivo, sans-serif' }}>Monitor &amp; History</h1>
           <p className="text-muted-foreground text-sm">
-            Real-time delivery logs · auto-refresh every 8s
-            {lastRefresh && <span className="ml-2 text-[#3ECF8E]/60">· Last: {lastRefresh.toLocaleTimeString()}</span>}
+            Real-time delivery logs · auto-refresh 8s
+            {lastRefresh && <span className="ml-2 text-[#3ECF8E]/60">· {lastRefresh.toLocaleTimeString()}</span>}
           </p>
         </div>
-        <button onClick={load} className="flex items-center gap-2 px-4 py-2 border border-[#2E2E2E] rounded-lg text-sm hover:border-[#3ECF8E] transition-colors">
-          <RefreshCw className="w-4 h-4" />Refresh
-        </button>
+
+        <div className="flex items-center gap-3">
+          {/* Shop Selector */}
+          <div className="flex items-center gap-2 bg-[#1C1C1C] border border-[#2E2E2E] rounded-lg px-3 py-2">
+            <Store className="w-4 h-4 text-muted-foreground" />
+            <select value={selectedShop} onChange={e => setSelectedShop(e.target.value)}
+              className="bg-transparent text-white text-sm font-medium outline-none min-w-[120px]">
+              <option value="">All Shops</option>
+              {shops.map(s => <option key={s.id} value={s.id}>{s.shop_name}</option>)}
+            </select>
+          </div>
+
+          {/* Refresh */}
+          <button onClick={handleRefresh}
+            className="flex items-center gap-2 px-4 py-2 border border-[#2E2E2E] rounded-lg text-sm hover:border-[#3ECF8E] transition-colors">
+            <RefreshCw className={`w-4 h-4 transition-transform duration-500 ${spinning ? 'animate-spin' : ''}`} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Summary Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
-          { label: 'Total Campaigns', value: campaigns.length,  icon: TrendingUp, color: '#3ECF8E' },
-          { label: 'Active Now',      value: campaigns.filter(c => ['pending','sending','in_progress'].includes(c.status)).length, icon: Activity, color: '#3B82F6' },
-          { label: 'Messages Sent',   value: totalSent,         icon: CheckCircle, color: '#3ECF8E' },
-          { label: 'Failed',          value: totalFailed,        icon: XCircle,    color: '#EF4444' },
+          { label: 'Campaigns',   value: shopCampaigns.length,  icon: TrendingUp,  color: '#3ECF8E' },
+          { label: 'Active Now',  value: shopCampaigns.filter(c => ['pending','sending','in_progress'].includes(c.status)).length, icon: Activity, color: '#3B82F6' },
+          { label: 'Sent',        value: totalSent,             icon: CheckCircle, color: '#3ECF8E' },
+          { label: 'Failed',      value: totalFailed,           icon: XCircle,     color: '#EF4444' },
         ].map(({ label, value, icon: Icon, color }) => (
           <div key={label} className="bg-[#1C1C1C] border border-[#2E2E2E] rounded-xl p-4">
             <div className="flex items-center gap-2 mb-1">
@@ -201,7 +272,7 @@ const BatchMonitorPage = () => {
         ))}
       </div>
 
-      {/* Live Batch Ticker (raw batches currently sending) */}
+      {/* Live Batch Ticker */}
       {activeBatches.length > 0 && (
         <div className="bg-[#1C1C1C] border border-[#3B82F6]/30 rounded-xl overflow-hidden">
           <div className="flex items-center gap-2 px-4 py-3 border-b border-[#2E2E2E] bg-[#3B82F6]/5">
@@ -219,32 +290,24 @@ const BatchMonitorPage = () => {
                   <th className="px-4 py-2 text-left font-medium">Campaign</th>
                   <th className="px-4 py-2 text-left font-medium w-40">Progress</th>
                   <th className="px-4 py-2 text-left font-medium">Status</th>
-                  <th className="px-4 py-2 text-left font-medium">Priority</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#2E2E2E]">
                 {activeBatches.map(b => {
-                  const total = b.customer_count || b.batch_size || 1;
-                  const sent  = b.success_count || 0;
-                  const pct   = Math.round((sent / total) * 100);
-                  const priorityLabels = {1:'VIP First',2:'High',3:'Normal',4:'Low'};
+                  const t = b.customer_count || 1;
+                  const s = b.success_count || 0;
+                  const p = Math.round((s / t) * 100);
                   return (
                     <tr key={b.id} className="hover:bg-[#252525] transition-colors">
                       <td className="px-4 py-3 font-mono text-xs">#{b.batch_number}/{b.total_batches}</td>
                       <td className="px-4 py-3 text-muted-foreground text-xs truncate max-w-[150px]">{b.campaign_name || '—'}</td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
-                          <Bar value={pct} color="#3B82F6" animated />
-                          <span className="text-xs font-mono w-8 text-right">{pct}%</span>
+                          <Bar value={p} color="#3B82F6" animated />
+                          <span className="text-xs font-mono w-8 text-right">{p}%</span>
                         </div>
                       </td>
-                      <td className="px-4 py-3">
-                        <span className="flex items-center gap-1 text-xs">
-                          {b.status === 'sending' ? '🚀' : '⏳'}
-                          <span className="capitalize">{b.status}</span>
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-xs text-muted-foreground">{priorityLabels[b.priority] || b.priority}</td>
+                      <td className="px-4 py-3 text-xs capitalize">{b.status === 'sending' ? '🚀 ' : '⏳ '}{b.status}</td>
                     </tr>
                   );
                 })}
@@ -256,24 +319,17 @@ const BatchMonitorPage = () => {
 
       {/* Campaign Cards */}
       <div>
-        {/* Filter tabs */}
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-xl font-bold" style={{ fontFamily: 'Chivo, sans-serif' }}>
             Campaigns <span className="text-muted-foreground font-normal text-base ml-2">({filtered.length})</span>
           </h2>
           <div className="flex gap-2">
-            {[['all','All'],['active','Active'],['completed','Completed']].map(([val, label]) => (
-              <button key={val} onClick={() => setFilter(val)}
+            {[['all','All'],['active','Active'],['completed','Completed']].map(([v, l]) => (
+              <button key={v} onClick={() => setFilter(v)}
                 className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-all ${
-                  filter === val
-                    ? 'bg-[#3ECF8E]/10 border-[#3ECF8E]/50 text-[#3ECF8E]'
-                    : 'border-[#2E2E2E] text-muted-foreground hover:border-[#3E3E3E]'
-                }`}>{label}</button>
+                  filter === v ? 'bg-[#3ECF8E]/10 border-[#3ECF8E]/50 text-[#3ECF8E]' : 'border-[#2E2E2E] text-muted-foreground hover:border-[#3E3E3E]'
+                }`}>{l}</button>
             ))}
-            <button onClick={() => { if(window.confirm('Clear ALL batch data?')) batchesAPI.clearAll().then(load); }}
-              className="px-3 py-1.5 rounded-lg border border-red-500/20 text-xs text-red-400 hover:bg-red-500/10 transition-colors ml-2">
-              Clear All
-            </button>
           </div>
         </div>
 
@@ -282,14 +338,12 @@ const BatchMonitorPage = () => {
         ) : filtered.length === 0 ? (
           <div className="text-center py-16 bg-[#1C1C1C] border border-[#2E2E2E] rounded-xl">
             <Activity className="w-12 h-12 text-[#2E2E2E] mx-auto mb-3" />
-            <p className="text-muted-foreground">No {filter !== 'all' ? filter : ''} campaigns yet.</p>
+            <p className="text-muted-foreground">No {filter !== 'all' ? filter : ''} campaigns{selectedShop ? ' for this shop' : ''}.</p>
             <p className="text-xs text-muted-foreground mt-1">Launch a campaign from a shop dashboard to see it here.</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
-            {filtered.map(c => (
-              <CampaignCard key={c._id} campaign={c} onStop={() => {}} onRefresh={load} />
-            ))}
+            {filtered.map(c => <CampaignCard key={c._id} campaign={c} onRefresh={load} />)}
           </div>
         )}
       </div>

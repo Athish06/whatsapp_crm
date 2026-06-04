@@ -63,6 +63,14 @@ async def startup_event():
         await Database.initialize_indexes()
         logger.info("Database indexes initialized")
         
+        # Run one-time database migration (customer_behavior_map -> customer_insights)
+        try:
+            from services import migrate_behavior_to_insights
+            migration_res = await migrate_behavior_to_insights(db)
+            logger.info(f"Database behavior map migration status: {migration_res}")
+        except Exception as migration_err:
+            logger.error(f"Failed to run database migration: {migration_err}")
+        
         # Initialize and start message queue scheduler
         from services.scheduler_service import MessageQueueScheduler
         message_scheduler = MessageQueueScheduler(db)
