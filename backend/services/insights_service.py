@@ -118,12 +118,12 @@ async def recalculate_all_insights(db: AsyncIOMotorDatabase, shop_id: str) -> in
     # ── Step 4: Level 1 — RFM Quintile Scoring ────────────────────────────
     agg_df = _compute_rfm_scores(agg_df)
 
-    # Store average bulkiness for waterfall
+    # Store average bulkiness for waterfall (kept for downstream compatibility)
     store_avg_bulkiness = agg_df["bulkiness"].mean()
 
     # Waterfall segmentation
     agg_df["segment"] = agg_df.apply(
-        lambda row: _waterfall_segment(row, store_avg_bulkiness), axis=1
+        lambda row: _waterfall_segment(row), axis=1
     )
 
     # ── Step 5: Level 2 — Behavioral Profiling ────────────────────────────
@@ -162,6 +162,7 @@ async def recalculate_all_insights(db: AsyncIOMotorDatabase, shop_id: str) -> in
             "r_score": int(row["r_score"]),
             "f_score": int(row["f_score"]),
             "m_score": int(row["m_score"]),
+            "b_score": int(row["b_score"]),
             "rfm_score": int(row["rfm_score"]),
             "segment": row["segment"],
 
@@ -225,8 +226,12 @@ def _compute_rfm_scores(df: pd.DataFrame) -> pd.DataFrame:
     df["m_rank"] = df["monetary_log"].rank(method="average")
     df["m_score"] = _safe_qcut(df["m_rank"], labels_asc=[1, 2, 3, 4, 5])
 
+    # ── Bulkiness Score (higher = better = 5) ──
+    df["b_rank"] = df["bulkiness"].rank(method="average")
+    df["b_score"] = _safe_qcut(df["b_rank"], labels_asc=[1, 2, 3, 4, 5])
+
     # Force int
-    for col in ["r_score", "f_score", "m_score"]:
+    for col in ["r_score", "f_score", "m_score", "b_score"]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(3).astype(int)
 
     df["rfm_score"] = df["r_score"] + df["f_score"] + df["m_score"]
@@ -246,21 +251,21 @@ def _safe_qcut(series: pd.Series, labels_asc: list, q: int = 5) -> pd.Series:
             return pd.Series(3, index=series.index)
 
 
-def _waterfall_segment(row, store_avg_bulkiness: float) -> str:
+def _waterfall_segment(row) -> str:
     """5-tier waterfall decision tree — identical to classifier.py logic."""
     total = row["rfm_score"]
     r = row["r_score"]
     f = row["f_score"]
     m = row["m_score"]
-    bulk = row["bulkiness"]
+    b = row.get("b_score", 3)
 
-    if total >= 12:
+    if total >= 12 and m >= 4:
         return CustomerCategory.VIP.value
-    if r == 1 and total > 4:
+    if r <= 2 and (f + m) >= 5:
         return CustomerCategory.AT_RISK.value
-    if 5 <= total <= 11 and bulk > store_avg_bulkiness:
+    if 5 <= total <= 11 and b >= 4:
         return CustomerCategory.POTENTIAL_BULK.value
-    if 5 <= total <= 11 and f >= m:
+    if 5 <= total <= 11 and f >= 3 and f >= m:
         return CustomerCategory.LOYAL_FREQUENT.value
     return CustomerCategory.BORING.value
 
@@ -330,6 +335,7 @@ async def migrate_behavior_to_insights(db: AsyncIOMotorDatabase) -> Dict[str, An
                         "r_score": 3,
                         "f_score": 3,
                         "m_score": 3,
+                        "b_score": 3,
                         "rfm_score": 9,
                         "last_calculated_at": datetime.now(timezone.utc).isoformat(),
                         "updated_at": datetime.now(timezone.utc).isoformat(),

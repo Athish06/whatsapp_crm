@@ -233,22 +233,22 @@ def classify_customers_rfm(
         r_score = row['r_score']
         f_score = row['f_score']
         m_score = row['m_score']
-        bulkiness = row['bulkiness']
+        b_score = row['b_score']
         
         # Rule 1: VIP Check
-        if total_score >= 12:
+        if total_score >= 12 and m_score >= 4:
             return CustomerCategory.VIP.value
         
         # Rule 2: At-Risk Check (The Rescue Logic)
-        if r_score == 1 and total_score > 4:
+        if r_score <= 2 and (f_score + m_score) >= 5:
             return CustomerCategory.AT_RISK.value
         
         # Rule 3: Potential Bulk Check
-        if 5 <= total_score <= 11 and bulkiness > store_avg_bulkiness:
+        if 5 <= total_score <= 11 and b_score >= 4:
             return CustomerCategory.POTENTIAL_BULK.value
         
         # Rule 4: Loyal Frequent Check
-        if 5 <= total_score <= 11 and f_score >= m_score:
+        if 5 <= total_score <= 11 and f_score >= 3 and f_score >= m_score:
             return CustomerCategory.LOYAL_FREQUENT.value
         
         # Rule 5: Boring (Baseline)
