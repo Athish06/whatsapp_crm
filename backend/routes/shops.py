@@ -127,14 +127,29 @@ async def preview_template(
     import re
     user_id = current_user.get("user_id") or current_user.get("id")
 
-    # Build customer query
+    # Build customer query — customers collection is identity-only, no segment stored.
+    # Segment filtering is done via a join with customer_insights.
     cust_query = {"user_id": user_id, "shop_id": shop_id}
+
     if body.segment and body.segment not in ("all", ""):
-        cust_query["segment"] = body.segment
+        # Get customer_ids that belong to this segment from customer_insights
+        seg_cursor = db.customer_insights.find(
+            {"shop_id": shop_id, "segment": body.segment},
+            {"_id": 0, "customer_id": 1}
+        ).limit(20)
+        seg_customer_ids = [doc["customer_id"] async for doc in seg_cursor]
+        if not seg_customer_ids:
+            return {
+                "hydrated_text": body.template_text,
+                "used_customer": None,
+                "available_customers": [],
+                "warning": f"No customers found for segment '{body.segment}'.",
+            }
+        cust_query["customer_id"] = {"$in": seg_customer_ids}
 
     # Fetch available customers (limit 10 for the toggle)
     available_cursor = db.customers.find(
-        cust_query, {"_id": 0, "id": 1, "name": 1, "phone": 1, "segment": 1, "customer_id": 1}
+        cust_query, {"_id": 0, "id": 1, "name": 1, "phone": 1, "customer_id": 1}
     ).limit(10)
     available_customers = [c async for c in available_cursor]
 
@@ -146,48 +161,69 @@ async def preview_template(
             "warning": "No customers found for this segment.",
         }
 
-    # Pick the requested customer or the first available
+    # Merge segment from customer_insights for UI compliance
+    cust_keys = [c.get("customer_id") or c.get("phone", "") for c in available_customers]
+    insights_cursor = db.customer_insights.find(
+        {"shop_id": shop_id, "customer_id": {"$in": cust_keys}},
+        {"customer_id": 1, "segment": 1}
+    )
+    insights_map = {doc["customer_id"]: doc.get("segment", "boring") async for doc in insights_cursor}
+    for c in available_customers:
+        key = c.get("customer_id") or c.get("phone", "")
+        c["segment"] = insights_map.get(key, "boring")
+
+    # Pick the requested customer or the first available with richest insight data
     chosen = None
+    chosen_insight = {}
+
     if body.customer_id:
+        # body.customer_id may be our internal UUID or the natural customer_id
         chosen_doc = await db.customers.find_one(
-            {"id": body.customer_id, "user_id": user_id, "shop_id": shop_id},
+            {"$or": [{"id": body.customer_id}, {"customer_id": body.customer_id}],
+             "user_id": user_id, "shop_id": shop_id},
             {"_id": 0},
         )
         if chosen_doc:
             chosen = chosen_doc
+
     if not chosen:
-        # Pick the first customer that has insight data (richest preview)
+        # Pick the first customer that has behavioral insight data (richest preview)
         for ac in available_customers:
-            cust_id_for_lookup = ac.get("customer_id") or ac.get("id")
+            cust_key = ac.get("customer_id") or ac.get("phone", "")
             insight = await db.customer_insights.find_one(
-                {"shop_id": shop_id, "customer_id": cust_id_for_lookup}, {"_id": 0}
+                {"shop_id": shop_id, "customer_id": cust_key}, {"_id": 0}
             )
             if insight and insight.get("favorite_category"):
                 chosen = await db.customers.find_one(
-                    {"id": ac["id"], "user_id": user_id}, {"_id": 0}
+                    {"customer_id": cust_key, "shop_id": shop_id, "user_id": user_id},
+                    {"_id": 0},
                 )
+                chosen_insight = insight
                 break
         if not chosen:
             chosen = await db.customers.find_one(
-                {"id": available_customers[0]["id"], "user_id": user_id}, {"_id": 0}
-            )
+                {"customer_id": available_customers[0].get("customer_id"),
+                 "shop_id": shop_id, "user_id": user_id},
+                {"_id": 0},
+            ) or {}
 
-    # Fetch insight data for this customer from customer_insights
-    cust_id_for_insight = chosen.get("customer_id") or chosen.get("id")
-    insight = await db.customer_insights.find_one(
-        {"shop_id": shop_id, "customer_id": cust_id_for_insight}, {"_id": 0}
-    ) or {}
+    # Fetch insight data for this customer from customer_insights (single source of truth)
+    if not chosen_insight:
+        cust_id_for_insight = chosen.get("customer_id") or chosen.get("phone", "")
+        chosen_insight = await db.customer_insights.find_one(
+            {"shop_id": shop_id, "customer_id": cust_id_for_insight}, {"_id": 0}
+        ) or {}
 
     # Build replacement map — the 8 smart variables
     replacements = {
         "customer_name": chosen.get("name", ""),
-        "segment": insight.get("segment", chosen.get("segment", "")),
-        "favorite_category": insight.get("favorite_category", ""),
-        "favorite_premium_product": insight.get("favorite_premium_product", ""),
-        "favorite_bulk_product": insight.get("favorite_bulk_product", ""),
-        "second_favorite_premium_product": insight.get("second_favorite_premium_product", ""),
-        "recently_bought_product": insight.get("recently_bought_product", ""),
-        "complementary_product": insight.get("complementary_product", ""),
+        "segment": chosen_insight.get("segment", ""),
+        "favorite_category": chosen_insight.get("favorite_category", ""),
+        "favorite_premium_product": chosen_insight.get("favorite_premium_product", ""),
+        "favorite_bulk_product": chosen_insight.get("favorite_bulk_product", ""),
+        "second_favorite_premium_product": chosen_insight.get("second_favorite_premium_product", ""),
+        "recently_bought_product": chosen_insight.get("recently_bought_product", ""),
+        "complementary_product": chosen_insight.get("complementary_product", ""),
     }
 
     # Hydrate
@@ -201,12 +237,16 @@ async def preview_template(
     return {
         "hydrated_text": hydrated,
         "used_customer": {
-            "customer_id": chosen.get("id"),
+            "customer_id": chosen.get("customer_id") or chosen.get("id"),
             "customer_name": chosen.get("name"),
-            "segment": insight.get("segment", chosen.get("segment", "")),
+            "segment": chosen_insight.get("segment", ""),
         },
         "available_customers": [
-            {"id": c["id"], "name": c.get("name", ""), "segment": c.get("segment", "")}
+            {
+                "id": c.get("id") or c.get("customer_id"),
+                "name": c.get("name", ""),
+                "segment": c.get("segment", ""),  # kept for UI compat
+            }
             for c in available_customers
         ],
         "replacements_applied": replacements,

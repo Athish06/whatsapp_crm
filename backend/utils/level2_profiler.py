@@ -12,7 +12,7 @@ Computes 8 per-customer template variables from transaction + product data:
 
 All logic is pure pandas — no DB access here. The transaction_service passes
 pre-loaded DataFrames and calls build_customer_profiles(), which returns a
-list of dicts ready for insertion into customer_behavior_map.
+list of dicts ready for insertion into customer_insights.
 """
 
 import re
@@ -56,7 +56,15 @@ def tag_premium_products(products_df: pd.DataFrame) -> pd.DataFrame:
         df["is_luxury"] = False
         return df
 
-    df["price"] = pd.to_numeric(df.get("price", df.get("unit_price", 0)), errors="coerce").fillna(0)
+    # Support price_per_unit (spec name), price, and unit_price (legacy names)
+    if "price_per_unit" in df.columns:
+        df["price"] = pd.to_numeric(df["price_per_unit"], errors="coerce").fillna(0)
+    elif "price" in df.columns:
+        df["price"] = pd.to_numeric(df["price"], errors="coerce").fillna(0)
+    elif "unit_price" in df.columns:
+        df["price"] = pd.to_numeric(df["unit_price"], errors="coerce").fillna(0)
+    else:
+        df["price"] = 0
 
     # --- per-category premium threshold ---
     cat_stats = (

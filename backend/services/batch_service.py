@@ -241,8 +241,10 @@ class BatchService:
             messages = []
             for customer in batch_customers:
                 # Determine which template to use
+                cust_key = customer.get("customer_id") or customer.get("phone", "")
+                customer_segment = (insights_segment_map.get(cust_key) or customer.get("segment", "boring")).lower()
+                
                 if segment_templates:
-                    customer_segment = customer.get("segment", "boring")
                     customer_template_id = segment_templates.get(customer_segment)
                     
                     if not customer_template_id:
@@ -257,7 +259,23 @@ class BatchService:
                     customer_template = templates_map[template_id]
                     customer_template_id = template_id
                 
-                message_content = prepare_message(customer_template["content"], customer)
+                # Fetch behavioral insight for this customer
+                cust_insight = behavior_map.get(cust_key) or {}
+                
+                # Build unified data dict for placeholder substitution
+                hydration_data = {
+                    **customer,
+                    "customer_name": customer.get("name", ""),
+                    "segment": cust_insight.get("segment", "boring"),
+                    "favorite_category": cust_insight.get("favorite_category", ""),
+                    "favorite_premium_product": cust_insight.get("favorite_premium_product", ""),
+                    "favorite_bulk_product": cust_insight.get("favorite_bulk_product", ""),
+                    "second_favorite_premium_product": cust_insight.get("second_favorite_premium_product", ""),
+                    "recently_bought_product": cust_insight.get("recently_bought_product", ""),
+                    "complementary_product": cust_insight.get("complementary_product", ""),
+                }
+                
+                message_content = prepare_message(customer_template["content"], hydration_data)
                 
                 # AI mode: inject offer_product_1 from behavior map
                 if ai_mode and shop_id:
@@ -283,11 +301,6 @@ class BatchService:
                     "loyal_frequent": 3,         # Loyal Frequent - reward habit
                     "boring": 4                  # Boring - low priority
                 }
-                customer_segment = customer.get("segment", "boring").lower()
-                # If segment is default/missing, try to get from insights
-                if customer_segment == "boring" and insights_segment_map:
-                    cust_key = customer.get("customer_id") or customer.get("phone", "")
-                    customer_segment = insights_segment_map.get(cust_key, customer_segment)
                 message_priority = segment_priority_map.get(customer_segment, 4)
                 
                 message_doc = {
@@ -296,7 +309,7 @@ class BatchService:
                     "customer_id": customer["id"],
                     "phone_number": customer["phone"],
                     "customer_name": customer["name"],
-                    "customer_segment": customer.get("segment", "boring"),
+                    "customer_segment": customer_segment,
                     "template_id": customer_template_id,
                     "message_content": message_content,
                     "status": MessageStatus.PENDING.value,
@@ -657,6 +670,14 @@ class BatchService:
             updates["segment_templates"] = segment_templates
             updates["mode"] = "segment-based"
 
+            # Load behavior maps (from customer_insights)
+            shop_id = batch.get("shop_id")
+            behavior_map = {}
+            if shop_id:
+                insight_cursor = self.db.customer_insights.find({"shop_id": shop_id}, {"_id": 0})
+                async for ins in insight_cursor:
+                    behavior_map[ins["customer_id"]] = ins
+
             msgs = await self.db.messages.find(message_query, {"_id": 0, "id": 1, "customer_id": 1, "customer_segment": 1}).to_list(10000)
             customer_ids = [m["customer_id"] for m in msgs if m.get("customer_id")]
             customers = await self.db.customers.find({"id": {"$in": customer_ids}, "user_id": user_id}, {"_id": 0}).to_list(10000)
@@ -673,7 +694,42 @@ class BatchService:
                 tpl = template_map.get(selected_template_id)
                 if not tpl:
                     continue
-                new_content = prepare_message(tpl["content"], customer)
+                
+                # Fetch behavioral insight for this customer
+                cust_key = customer.get("customer_id") or customer.get("phone", "")
+                cust_insight = behavior_map.get(cust_key) or {}
+                
+                # Build unified data dict for placeholder substitution
+                hydration_data = {
+                    **customer,
+                    "customer_name": customer.get("name", ""),
+                    "segment": cust_insight.get("segment", "boring"),
+                    "favorite_category": cust_insight.get("favorite_category", ""),
+                    "favorite_premium_product": cust_insight.get("favorite_premium_product", ""),
+                    "favorite_bulk_product": cust_insight.get("favorite_bulk_product", ""),
+                    "second_favorite_premium_product": cust_insight.get("second_favorite_premium_product", ""),
+                    "recently_bought_product": cust_insight.get("recently_bought_product", ""),
+                    "complementary_product": cust_insight.get("complementary_product", ""),
+                }
+                
+                new_content = prepare_message(tpl["content"], hydration_data)
+                
+                # Handle AI and fixed product placeholders
+                ai_mode = batch.get("ai_mode", False)
+                fixed_product = batch.get("fixed_product")
+                if ai_mode and shop_id:
+                    cust_behavior = behavior_map.get(customer.get("phone", "")) or behavior_map.get(customer.get("id", "")) or behavior_map.get(cust_key) or {}
+                    if cust_behavior and cust_behavior.get("fav_items"):
+                        offer_product = cust_behavior["fav_items"][0].get("product_name", "")
+                        new_content = new_content.replace("{{offer_product_1}}", offer_product)
+                        new_content = new_content.replace("{{favorite_item}}", offer_product)
+                    else:
+                        new_content = new_content.replace("{{offer_product_1}}", fixed_product or "")
+                        new_content = new_content.replace("{{favorite_item}}", fixed_product or "")
+                
+                if fixed_product:
+                    new_content = new_content.replace("{{fixed_product}}", fixed_product)
+
                 await self.db.messages.update_one(
                     {"id": msg["id"], "user_id": user_id},
                     {"$set": {"template_id": selected_template_id, "message_content": new_content}}
@@ -687,6 +743,14 @@ class BatchService:
             updates["template_id"] = template_id
             updates["mode"] = "single-template"
 
+            # Load behavior maps (from customer_insights)
+            shop_id = batch.get("shop_id")
+            behavior_map = {}
+            if shop_id:
+                insight_cursor = self.db.customer_insights.find({"shop_id": shop_id}, {"_id": 0})
+                async for ins in insight_cursor:
+                    behavior_map[ins["customer_id"]] = ins
+
             msgs = await self.db.messages.find(message_query, {"_id": 0, "id": 1, "customer_id": 1}).to_list(10000)
             customer_ids = [m["customer_id"] for m in msgs if m.get("customer_id")]
             customers = await self.db.customers.find({"id": {"$in": customer_ids}, "user_id": user_id}, {"_id": 0}).to_list(10000)
@@ -696,7 +760,42 @@ class BatchService:
                 customer = customer_map.get(msg.get("customer_id"))
                 if not customer:
                     continue
-                new_content = prepare_message(template["content"], customer)
+                
+                # Fetch behavioral insight for this customer
+                cust_key = customer.get("customer_id") or customer.get("phone", "")
+                cust_insight = behavior_map.get(cust_key) or {}
+                
+                # Build unified data dict for placeholder substitution
+                hydration_data = {
+                    **customer,
+                    "customer_name": customer.get("name", ""),
+                    "segment": cust_insight.get("segment", "boring"),
+                    "favorite_category": cust_insight.get("favorite_category", ""),
+                    "favorite_premium_product": cust_insight.get("favorite_premium_product", ""),
+                    "favorite_bulk_product": cust_insight.get("favorite_bulk_product", ""),
+                    "second_favorite_premium_product": cust_insight.get("second_favorite_premium_product", ""),
+                    "recently_bought_product": cust_insight.get("recently_bought_product", ""),
+                    "complementary_product": cust_insight.get("complementary_product", ""),
+                }
+                
+                new_content = prepare_message(template["content"], hydration_data)
+                
+                # Handle AI and fixed product placeholders
+                ai_mode = batch.get("ai_mode", False)
+                fixed_product = batch.get("fixed_product")
+                if ai_mode and shop_id:
+                    cust_behavior = behavior_map.get(customer.get("phone", "")) or behavior_map.get(customer.get("id", "")) or behavior_map.get(cust_key) or {}
+                    if cust_behavior and cust_behavior.get("fav_items"):
+                        offer_product = cust_behavior["fav_items"][0].get("product_name", "")
+                        new_content = new_content.replace("{{offer_product_1}}", offer_product)
+                        new_content = new_content.replace("{{favorite_item}}", offer_product)
+                    else:
+                        new_content = new_content.replace("{{offer_product_1}}", fixed_product or "")
+                        new_content = new_content.replace("{{favorite_item}}", fixed_product or "")
+                
+                if fixed_product:
+                    new_content = new_content.replace("{{fixed_product}}", fixed_product)
+
                 await self.db.messages.update_one(
                     {"id": msg["id"], "user_id": user_id},
                     {"$set": {"template_id": template_id, "message_content": new_content}}

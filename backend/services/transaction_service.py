@@ -1,9 +1,13 @@
 """
 Transaction service for processing transaction CSV uploads.
-Handles parsing, storage, and triggering insight recalculation.
+Per schema spec:
+  - transaction_id (UUID string, generated)
+  - purchase_qty  (renamed from quantity)
+  - total_amount  (renamed from amount)
 """
 import io
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Dict, Any, List
 
@@ -23,11 +27,11 @@ class TransactionService:
     def get_required_columns() -> List[Dict[str, str]]:
         """Return the required columns for transaction CSV."""
         return [
-            {"key": "customer_id", "label": "Customer ID / Phone", "description": "Must match phone or id in the Customer file"},
+            {"key": "customer_id", "label": "Customer ID / Phone", "description": "Must match customer_id or phone in the Customer file"},
             {"key": "product_id", "label": "Product ID", "description": "Must match product_id in the Product file"},
             {"key": "purchase_date", "label": "Purchase Date", "description": "Critical for Recency Weighting (YYYY-MM-DD format)"},
-            {"key": "quantity", "label": "Quantity", "description": "Used to identify Bulk behavior (buying 50 vs 1 unit)"},
-            {"key": "amount", "label": "Amount", "description": "Total spend per transaction to verify spend per category"},
+            {"key": "quantity", "label": "Quantity (purchase_qty)", "description": "Units purchased — used to identify Bulk behavior"},
+            {"key": "amount", "label": "Amount (total_amount)", "description": "Total spend per transaction for Monetary scoring"},
         ]
 
     async def process_transactions(
@@ -42,6 +46,10 @@ class TransactionService:
         Parse transaction CSV, store in transactions collection,
         and trigger full insight recalculation (RFM + Level 2).
 
+        Stored fields per spec:
+            transaction_id, shop_id, customer_id, product_id,
+            purchase_date, purchase_qty, total_amount, uploaded_at
+
         Returns:
             Dict with transaction_count, categories_found, top_products_per_category,
             customer_category_percentages
@@ -55,7 +63,7 @@ class TransactionService:
         else:
             raise ValueError("Unsupported file format. Use CSV or Excel.")
 
-        # Apply column mapping
+        # Apply column mapping (user maps their CSV headers → our canonical names)
         reverse_map = {v: k for k, v in column_mapping.items() if v and v != "none"}
         df = df.rename(columns=reverse_map)
 
@@ -95,19 +103,20 @@ class TransactionService:
         # Delete existing transactions for this shop (full replace)
         await self.db.transactions.delete_many({"shop_id": shop_id})
 
-        # Prepare and insert transaction documents
+        # Prepare and insert transaction documents (per spec field names)
+        uploaded_at = datetime.now(timezone.utc).isoformat()
         tx_docs = []
         for _, row in df.iterrows():
             doc = {
+                "transaction_id": str(uuid.uuid4()),    # NEW: per spec
                 "shop_id": shop_id,
-                "user_id": user_id,
                 "customer_id": str(row["customer_id"]),
                 "product_id": str(row["product_id"]),
                 "category": row["category"],
                 "purchase_date": row["purchase_date"],
-                "quantity": int(row["quantity"]),
-                "amount": float(row["amount"]),
-                "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                "purchase_qty": int(row["quantity"]),    # renamed per spec
+                "total_amount": float(row["amount"]),    # renamed per spec
+                "uploaded_at": uploaded_at,
             }
             tx_docs.append(doc)
 
@@ -115,15 +124,15 @@ class TransactionService:
             await self.db.transactions.insert_many(tx_docs)
             logger.info(f"Inserted {len(tx_docs)} transactions for shop {shop_id}")
 
-        # ── Trigger full insight recalculation (RFM + Level 2) ──
+        # ── Trigger full insight recalculation (RFM + Level 2) ──────────────
         from services.insights_service import recalculate_all_insights
         insights_count = await recalculate_all_insights(self.db, shop_id)
         logger.info(f"Recalculated {insights_count} customer insights after transaction upload")
 
-        # Calculate response insights
+        # ── Build response insights ──────────────────────────────────────────
         categories_found = df["category"].nunique()
 
-        # Top product per category (by total quantity)
+        # Top product per category (by total purchase_qty)
         top_per_cat = {}
         for cat in df["category"].unique():
             cat_df = df[df["category"] == cat]
