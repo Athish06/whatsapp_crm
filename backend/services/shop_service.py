@@ -159,8 +159,8 @@ class ShopService:
             {"$match": {"shop_id": shop_id}},
             {"$group": {
                 "_id": {"category": "$category", "product_id": "$product_id"},
-                "total_qty": {"$sum": "$quantity"},
-                "total_amount": {"$sum": "$amount"},
+                "total_qty": {"$sum": {"$ifNull": ["$purchase_qty", "$quantity"]}},
+                "total_amount": {"$sum": {"$ifNull": ["$total_amount", "$amount"]}},
             }},
             {"$sort": {"total_qty": -1}},
         ]
@@ -184,15 +184,51 @@ class ShopService:
         premium_products_by_category = {}
         bulk_products_by_category = {}
         
-        tx_cursor = self.db.transactions.find({"shop_id": shop_id}, {"_id": 0, "product_id": 1, "category": 1, "amount": 1, "quantity": 1})
+        tx_cursor = self.db.transactions.find(
+            {"shop_id": shop_id},
+            {"_id": 0, "product_id": 1, "category": 1, "amount": 1, "quantity": 1, "total_amount": 1, "purchase_qty": 1}
+        )
         tx_rows = [doc async for doc in tx_cursor]
         
-        prod_cursor = self.db.product_inventory.find({"shop_id": shop_id}, {"_id": 0, "product_id": 1, "product_name": 1, "product_type": 1})
+        prod_cursor = self.db.product_inventory.find(
+            {"shop_id": shop_id},
+            {"_id": 0, "product_id": 1, "product_name": 1, "product_type": 1, "is_premium": 1, "is_bulk": 1}
+        )
         prod_rows = [doc async for doc in prod_cursor]
         
         if tx_rows and prod_rows:
             tx_df = pd.DataFrame(tx_rows)
             prod_df = pd.DataFrame(prod_rows)
+            
+            # Normalize product_type for backward compatibility
+            if "product_type" not in prod_df.columns:
+                prod_df["product_type"] = "daily"
+                if "is_premium" in prod_df.columns:
+                    prod_df.loc[prod_df["is_premium"] == True, "product_type"] = "premium"
+                if "is_bulk" in prod_df.columns:
+                    prod_df.loc[prod_df["is_bulk"] == True, "product_type"] = "bulk"
+            else:
+                prod_df["product_type"] = prod_df["product_type"].fillna("daily")
+                # Also fall back to is_premium/is_bulk if product_type is daily but flags say otherwise
+                if "is_premium" in prod_df.columns:
+                    prod_df.loc[(prod_df["product_type"] == "daily") & (prod_df["is_premium"] == True), "product_type"] = "premium"
+                if "is_bulk" in prod_df.columns:
+                    prod_df.loc[(prod_df["product_type"] == "daily") & (prod_df["is_bulk"] == True), "product_type"] = "bulk"
+            
+            # Support both old field names (quantity/amount) and new spec names (purchase_qty/total_amount)
+            if "purchase_qty" in tx_df.columns:
+                tx_df["quantity"] = pd.to_numeric(tx_df["purchase_qty"], errors="coerce").fillna(1).astype(int)
+            elif "quantity" in tx_df.columns:
+                tx_df["quantity"] = pd.to_numeric(tx_df["quantity"], errors="coerce").fillna(1).astype(int)
+            else:
+                tx_df["quantity"] = 1
+
+            if "total_amount" in tx_df.columns:
+                tx_df["amount"] = pd.to_numeric(tx_df["total_amount"], errors="coerce").fillna(0)
+            elif "amount" in tx_df.columns:
+                tx_df["amount"] = pd.to_numeric(tx_df["amount"], errors="coerce").fillna(0)
+            else:
+                tx_df["amount"] = 0
             
             if not tx_df.empty and not prod_df.empty:
                 cust_tx = tx_df.merge(prod_df[['product_id', 'product_name', 'product_type']], on='product_id', how='left')
@@ -322,6 +358,8 @@ class ShopService:
         transactions = await self.db.transactions.delete_many({"shop_id": shop_id})
         # Delete customer_insights (new)
         insights = await self.db.customer_insights.delete_many({"shop_id": shop_id})
+        # Delete customer_behavior_map (legacy if exists)
+        behavior = await self.db.customer_behavior_map.delete_many({"shop_id": shop_id})
         # Delete files
         files = await self.db.files.delete_many(
             {"user_id": user_id, "shop_id": shop_id}

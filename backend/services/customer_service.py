@@ -1,5 +1,7 @@
 """
 Customer service for managing customer data.
+Per schema spec: customers = identity-only (name, phone, email, city, first_seen, last_seen).
+RFM / segment data lives exclusively in customer_insights.
 """
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
@@ -51,6 +53,7 @@ class CustomerService:
             "customer_id": None,
             "name": None,
             "phone": None,
+            "city": None,
         }
         
         # Customer ID field suggestions
@@ -75,6 +78,13 @@ class CustomerService:
             if any(kw in col_lower for kw in phone_keywords) and not mapping["phone"]:
                 mapping["phone"] = col
                 break
+
+        # City field suggestions
+        city_keywords = ['city', 'town', 'location', 'area', 'district', 'place']
+        for col, col_lower in zip(columns, columns_lower):
+            if any(kw in col_lower for kw in city_keywords) and not mapping["city"]:
+                mapping["city"] = col
+                break
         
         return mapping
     
@@ -92,15 +102,15 @@ class CustomerService:
     ) -> Dict[str, Any]:
         """Process and upload customers from CSV/Excel file.
         
-        In the 3-layer architecture, this stores ONLY core bio data:
-            - customer_id (from CSV or auto-generated)
-            - name
-            - phone
-            - email (optional)
-            - user_id, shop_id
-        
-        RFM segmentation is NOT performed here. It is computed by
-        recalculate_all_insights() after transactions are uploaded.
+        Per schema spec, stores ONLY identity/bio data:
+            - customer_id (natural key from CSV, or phone as fallback)
+            - name, phone, email, city
+            - first_seen (set on first insert, never updated)
+            - last_seen (updated every re-upload)
+            - user_id, shop_id, source_file, uploaded_at
+
+        RFM segmentation is NOT stored here. It is computed exclusively
+        by recalculate_all_insights() and lives in customer_insights.
         
         Args:
             file_content: Raw file bytes
@@ -109,38 +119,39 @@ class CustomerService:
             shop_id: Shop ID
             file_url: URL of file in Backblaze B2 (optional)
             file_id: File ID in files collection (optional)
-            campaign_id: Campaign ID (optional)
+            campaign_id: Campaign ID (optional, kept for file linkage)
             column_mapping: User-provided column mapping (optional)
             percentile: Deprecated — kept for backward compat
         """
         # Parse file
         df = self._parse_customer_csv(file_content, filename, column_mapping)
         
-        # Prepare customer documents with ONLY core bio fields
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Prepare customer documents with ONLY identity fields
         customers = []
         for _, row in df.iterrows():
             customer_data = row.to_dict()
             phone_value = str(customer_data.get('phone', '')).strip()
 
-            # Blank phone rows cannot be safely upserted because phone is part of the unique key.
+            # Blank phone rows cannot be safely upserted (phone is part of the unique key)
             if not phone_value:
                 continue
             
-            # Extract customer_id from CSV if available, else auto-generate
+            # Extract customer_id from CSV if available, else use phone as fallback
             csv_customer_id = str(customer_data.get('customer_id', '')).strip()
-            
+            city_value = str(customer_data.get('city', '')).strip()
+
             customer_doc = {
-                "id": str(uuid.uuid4()),
                 "user_id": user_id,
                 "shop_id": shop_id,
-                "campaign_id": campaign_id,
-                "customer_id": csv_customer_id if csv_customer_id else phone_value,  # Use phone as fallback ID
+                "customer_id": csv_customer_id if csv_customer_id else phone_value,
                 "name": str(customer_data.get('name', '')).strip(),
                 "phone": phone_value,
                 "email": str(customer_data.get('email', '')).strip() if 'email' in customer_data else '',
-                "segment": "boring",  # Default — will be overwritten by insights engine
-                "category": "boring",
-                "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                "city": city_value,
+                "last_seen": now,
+                "uploaded_at": now,
                 "source_file": filename,
             }
             
@@ -149,41 +160,43 @@ class CustomerService:
                 customer_doc["file_url"] = file_url
             if file_id:
                 customer_doc["file_id"] = file_id
-            
+            if campaign_id:
+                customer_doc["campaign_id"] = campaign_id
+
             customers.append(customer_doc)
 
-        # Deduplicate on the natural unique key before bulk upsert
+        # Deduplicate on (shop_id, phone) before bulk upsert
         deduped_customers = []
         seen_keys = set()
         for customer in customers:
-            key = (customer.get("user_id"), customer.get("shop_id"), customer.get("campaign_id"), customer.get("phone"))
+            key = (customer.get("shop_id"), customer.get("phone"))
             if key in seen_keys:
                 continue
             seen_keys.add(key)
             deduped_customers.append(customer)
         customers = deduped_customers
         
-        # Overwrite snapshot per campaign container.
-        delete_filter = {"user_id": user_id, "campaign_id": campaign_id, "shop_id": shop_id}
-        if not campaign_id:
-            delete_filter = {"user_id": user_id, "campaign_id": {"$exists": False}, "shop_id": shop_id}
-        await self.db.customers.delete_many(delete_filter)
-
-        # Insert/Update customers in database
+        # Upsert: set first_seen only on insert, always update last_seen
         if customers:
             from pymongo import UpdateOne
             
             operations = []
             for customer in customers:
+                # Separate first_seen — only set on insert
+                set_fields = {k: v for k, v in customer.items()}
                 operations.append(
                     UpdateOne(
                         {
-                            "user_id": customer["user_id"],
                             "shop_id": customer.get("shop_id"),
-                            "campaign_id": customer.get("campaign_id"),
                             "phone": customer["phone"],
                         },
-                        {"$set": customer},
+                        {
+                            "$set": set_fields,
+                            "$setOnInsert": {
+                                "first_seen": now,
+                                "id": str(uuid.uuid4()),
+                            },
+                        },
                         upsert=True
                     )
                 )
@@ -193,7 +206,6 @@ class CustomerService:
                 logger.info(f"Upserted {result.upserted_count} new customers, modified {result.modified_count} existing")
         
         # After storing customers, trigger insights recalculation if transactions exist
-        # This ensures segments get populated if transactions were already uploaded
         classifications = {
             "vip": 0,
             "at_risk": 0,
@@ -205,12 +217,12 @@ class CustomerService:
         if shop_id:
             tx_count = await self.db.transactions.count_documents({"shop_id": shop_id})
             if tx_count > 0:
-                # Transactions exist — run insights in background
+                # Transactions exist — run insights pipeline
                 from services.insights_service import recalculate_all_insights
                 insights_count = await recalculate_all_insights(self.db, shop_id)
                 logger.info(f"Recalculated {insights_count} insights after customer upload")
 
-                # Re-read classifications from customer_insights
+                # Read classifications from customer_insights
                 seg_pipeline = [
                     {"$match": {"shop_id": shop_id}},
                     {"$group": {"_id": "$segment", "count": {"$sum": 1}}},
@@ -230,18 +242,34 @@ class CustomerService:
                     else:
                         classifications["boring"] += doc["count"]
 
-                # Reload customers with updated segments
-                customers = await self.db.customers.find(
-                    {"user_id": user_id, "shop_id": shop_id},
-                    {"_id": 0}
-                ).to_list(10000)
+        # Return customers without _id
+        customers_response = await self.db.customers.find(
+            {"user_id": user_id, "shop_id": shop_id},
+            {"_id": 0}
+        ).to_list(10000)
 
-        # Remove _id field added by MongoDB
-        customers_response = []
-        for customer in customers:
-            customer_copy = {k: v for k, v in customer.items() if k != '_id'}
-            customers_response.append(customer_copy)
-        
+        # Merge segment/RFM fields from customer_insights for each customer
+        if shop_id and customers_response:
+            insights_cursor = self.db.customer_insights.find({"shop_id": shop_id})
+            insights = {doc["customer_id"]: doc async for doc in insights_cursor}
+            
+            for c in customers_response:
+                cust_key = c.get("customer_id") or c.get("phone", "")
+                insight = insights.get(cust_key)
+                if insight:
+                    c["segment"] = insight.get("segment", "boring")
+                    c["rfm_score"] = insight.get("rfm_score")
+                    c["r_score"] = insight.get("r_score")
+                    c["f_score"] = insight.get("f_score")
+                    c["m_score"] = insight.get("m_score")
+                    c["recency_days"] = insight.get("recency_days")
+                    c["frequency"] = insight.get("frequency")
+                    c["monetary"] = insight.get("monetary")
+                    c["favorite_category"] = insight.get("favorite_category")
+                    c["top_categories"] = insight.get("top_categories", [])
+                else:
+                    c["segment"] = "boring"
+
         return {
             "total_customers": len(customers_response),
             "classifications": classifications,
@@ -258,9 +286,10 @@ class CustomerService:
         filename: str,
         column_mapping: Optional[Dict[str, str]] = None,
     ) -> pd.DataFrame:
-        """Parse customer CSV with the simplified 3-column schema.
+        """Parse customer CSV with the simplified schema.
         
-        Expected CSV columns: customer_id, customer_name, mobile_no
+        Supported columns: customer_id, name, phone, email, city
+        Required: name, phone
         """
         filename_lower = filename.lower()
         
@@ -288,6 +317,9 @@ class CustomerService:
                 'contact': 'phone',
                 'email_address': 'email',
                 'cust_id': 'customer_id',
+                'town': 'city',
+                'location': 'city',
+                'area': 'city',
             }
             df.rename(columns=auto_map, inplace=True)
         
@@ -304,11 +336,10 @@ class CustomerService:
         if 'phone' in df.columns:
             df['phone'] = df['phone'].astype(str).str.replace(r'[\s\-\(\)]', '', regex=True)
         
-        # Ensure optional columns exist
-        if 'email' not in df.columns:
-            df['email'] = ''
-        if 'customer_id' not in df.columns:
-            df['customer_id'] = ''
+        # Ensure optional columns exist with empty defaults
+        for optional_col in ['email', 'customer_id', 'city']:
+            if optional_col not in df.columns:
+                df[optional_col] = ''
         
         return df
     
@@ -321,6 +352,28 @@ class CustomerService:
             query,
             {"_id": 0}
         ).sort("uploaded_at", -1).to_list(1000)
+        
+        # Merge segment/RFM fields from customer_insights for each customer
+        if shop_id and customers:
+            insights_cursor = self.db.customer_insights.find({"shop_id": shop_id})
+            insights = {doc["customer_id"]: doc async for doc in insights_cursor}
+            
+            for c in customers:
+                cust_key = c.get("customer_id") or c.get("phone", "")
+                insight = insights.get(cust_key)
+                if insight:
+                    c["segment"] = insight.get("segment", "boring")
+                    c["rfm_score"] = insight.get("rfm_score")
+                    c["r_score"] = insight.get("r_score")
+                    c["f_score"] = insight.get("f_score")
+                    c["m_score"] = insight.get("m_score")
+                    c["recency_days"] = insight.get("recency_days")
+                    c["frequency"] = insight.get("frequency")
+                    c["monetary"] = insight.get("monetary")
+                    c["favorite_category"] = insight.get("favorite_category")
+                    c["top_categories"] = insight.get("top_categories", [])
+                else:
+                    c["segment"] = "boring"
         
         return {"customers": customers, "total": len(customers)}
     
@@ -349,7 +402,8 @@ class CustomerService:
                 "customers": []
             }
         
-        # Calculate classifications from the segment field (synced from insights)
+        # Get classifications from customer_insights (source of truth)
+        shop_ids = list({c.get("shop_id") for c in customers if c.get("shop_id")})
         classifications = {
             "vip": 0,
             "at_risk": 0,
@@ -358,13 +412,43 @@ class CustomerService:
             "boring": 0,
         }
         
-        for customer in customers:
-            segment = customer.get("segment") or customer.get("category") or "boring"
-            if segment in classifications:
-                classifications[segment] += 1
+        # Fetch insights and merge into customers
+        insights = {}
+        for sid in shop_ids:
+            insights_cursor = self.db.customer_insights.find({"shop_id": sid})
+            async for doc in insights_cursor:
+                insights[(sid, doc["customer_id"])] = doc
+                
+            seg_pipeline = [
+                {"$match": {"shop_id": sid}},
+                {"$group": {"_id": "$segment", "count": {"$sum": 1}}},
+            ]
+            async for doc in self.db.customer_insights.aggregate(seg_pipeline):
+                seg = doc["_id"] or "boring"
+                if seg in classifications:
+                    classifications[seg] += doc["count"]
+                else:
+                    classifications["boring"] += doc["count"]
+
+        # Merge insights into customer records
+        for c in customers:
+            sid = c.get("shop_id")
+            cust_id = c.get("customer_id") or c.get("phone", "")
+            insight = insights.get((sid, cust_id))
+            if insight:
+                c["segment"] = insight.get("segment", "boring")
+                c["rfm_score"] = insight.get("rfm_score")
+                c["r_score"] = insight.get("r_score")
+                c["f_score"] = insight.get("f_score")
+                c["m_score"] = insight.get("m_score")
+                c["recency_days"] = insight.get("recency_days")
+                c["frequency"] = insight.get("frequency")
+                c["monetary"] = insight.get("monetary")
+                c["favorite_category"] = insight.get("favorite_category")
+                c["top_categories"] = insight.get("top_categories", [])
             else:
-                classifications["boring"] += 1
-        
+                c["segment"] = "boring"
+
         return {
             "total_customers": len(customers),
             "classifications": classifications,

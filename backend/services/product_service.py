@@ -1,6 +1,10 @@
 """
 Product service for processing product CSV uploads.
-Handles parsing, column mapping, and storage in product_inventory collection.
+Per schema spec:
+  - price_per_unit (renamed from price)
+  - is_premium (bool)
+  - is_bulk (bool)
+  - product_type kept for backward compat with level2_profiler
 """
 import io
 import logging
@@ -24,9 +28,9 @@ class ProductService:
         """Return the required columns for product CSV."""
         return [
             {"key": "product_id", "label": "Product ID", "description": "Unique product identifier — links to Transaction file"},
-            {"key": "product_name", "label": "Product Name", "description": "Used for {{offer_product_1}} and {{favorite_item}} placeholders"},
+            {"key": "product_name", "label": "Product Name", "description": "Used for {{favorite_premium_product}} and {{favorite_bulk_product}} placeholders"},
             {"key": "category", "label": "Category", "description": "Critical for Category Affinity Scoring (e.g., Grocery, Cosmetics)"},
-            {"key": "price", "label": "Price", "description": "Critical for Standard Deviation math to find Premium outliers"},
+            {"key": "price", "label": "Price / Unit Price", "description": "Critical for Standard Deviation math to find Premium outliers (stored as price_per_unit)"},
             {"key": "unit", "label": "Unit", "description": "To identify Bulk items (scans for kg, pack, bundle, etc.)"},
         ]
 
@@ -39,12 +43,18 @@ class ProductService:
         column_mapping: Dict[str, str],
     ) -> Dict[str, Any]:
         """
-        Parse product CSV, apply column mapping, classify product types, and upsert into MongoDB.
+        Parse product CSV, apply column mapping, classify product types,
+        and upsert into MongoDB.
 
-        Product type classification:
-        - Premium: price > mean + 1 std deviation
-        - Bulk: unit contains 'kg', 'pack', 'bundle', 'box', 'carton'
-        - Daily: everything else
+        Product type classification (per spec):
+        - Premium: price_per_unit > mean + 1 std deviation (per category)
+        - Bulk:    unit contains bulk keywords (kg, pack, bundle, box, carton…)
+        - Daily:   everything else
+
+        Stores:
+            product_id, shop_id, user_id, product_name, category,
+            price_per_unit, unit, is_premium (bool), is_bulk (bool),
+            product_type (str, for backward compat), uploaded_at
 
         Returns:
             Dict with product_count, categories_found, category_breakdown, product_types
@@ -78,27 +88,51 @@ class ProductService:
         # Drop rows with empty product_id
         df = df[df["product_id"].str.len() > 0]
 
-        # Classify product types using standard deviation
-        mean_price = df["price"].mean()
-        std_price = df["price"].std()
-        premium_threshold = mean_price + std_price if std_price > 0 else mean_price * 1.5
+        # ── Premium Classification (per-category std dev) ──────────────────
+        # Compute per-category mean/std for more accurate thresholds
+        cat_stats = df.groupby("category")["price"].agg(["mean", "std"]).reset_index()
+        cat_stats.columns = ["category", "cat_mean", "cat_std"]
+        df = df.merge(cat_stats, on="category", how="left")
 
-        bulk_keywords = ["kg", "pack", "bundle", "box", "carton", "dozen", "liter", "litre"]
+        def _premium_threshold(row):
+            std = row["cat_std"]
+            mean = row["cat_mean"]
+            if pd.isna(std) or std == 0:
+                return mean * 1.15
+            return mean + 1.0 * std
+
+        df["premium_threshold"] = df.apply(_premium_threshold, axis=1)
+
+        # ── Bulk Classification ────────────────────────────────────────────
+        bulk_keywords = ["kg", "kgs", "pack", "bundle", "box", "carton", "dozen",
+                         "liter", "litre", "litres", "sack", "pouch", "crate"]
 
         def classify_product(row):
-            if row["price"] > premium_threshold:
-                return "premium"
-            if any(kw in str(row["unit"]).lower() for kw in bulk_keywords):
-                return "bulk"
-            return "daily"
+            is_prem = row["price"] > row["premium_threshold"]
+            is_blk = any(kw in str(row["unit"]).lower() for kw in bulk_keywords)
+            # product_type string for level2_profiler backward compat
+            if is_prem:
+                ptype = "premium"
+            elif is_blk:
+                ptype = "bulk"
+            else:
+                ptype = "daily"
+            return is_prem, is_blk, ptype
 
-        df["product_type"] = df.apply(classify_product, axis=1)
+        results = df.apply(classify_product, axis=1, result_type="expand")
+        df["is_premium"] = results[0]
+        df["is_bulk"] = results[1]
+        df["product_type"] = results[2]
 
-        # Delete existing products for this shop (full replace)
+        # Drop helper columns
+        df = df.drop(columns=["cat_mean", "cat_std", "premium_threshold"], errors="ignore")
+
+        # Delete existing products for this shop (full replace per upload)
         await self.db.product_inventory.delete_many({"shop_id": shop_id})
 
         # Prepare and insert documents
         products = []
+        uploaded_at = datetime.now(timezone.utc).isoformat()
         for _, row in df.iterrows():
             doc = {
                 "shop_id": shop_id,
@@ -106,10 +140,12 @@ class ProductService:
                 "product_id": row["product_id"],
                 "product_name": row["product_name"],
                 "category": row["category"],
-                "price": float(row["price"]),
+                "price_per_unit": float(row["price"]),   # renamed per spec
                 "unit": row["unit"],
-                "product_type": row["product_type"],
-                "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                "is_premium": bool(row["is_premium"]),    # explicit boolean
+                "is_bulk": bool(row["is_bulk"]),          # explicit boolean
+                "product_type": row["product_type"],      # kept for level2_profiler compat
+                "uploaded_at": uploaded_at,
             }
             products.append(doc)
 
@@ -120,11 +156,12 @@ class ProductService:
         # Calculate category breakdown
         category_breakdown = df["category"].value_counts().to_dict()
         product_type_breakdown = df["product_type"].value_counts().to_dict()
+        premium_threshold_global = float(df["price"].mean() + df["price"].std()) if len(df) > 1 else float(df["price"].mean())
 
         return {
             "product_count": len(products),
             "categories_found": len(category_breakdown),
             "category_breakdown": category_breakdown,
             "product_types": product_type_breakdown,
-            "premium_threshold": round(premium_threshold, 2),
+            "premium_threshold": round(premium_threshold_global, 2),
         }
