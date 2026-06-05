@@ -24,8 +24,6 @@ const DashboardPage = () => {
 
   useEffect(() => {
     loadShops();
-    const interval = setInterval(loadShops, 10000);
-    return () => clearInterval(interval);
   }, [loadShops]);
 
   const handleCreateShop = async (e) => {

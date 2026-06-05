@@ -245,8 +245,6 @@ const ShopDashboardPage = () => {
 
   useEffect(() => {
     loadShop();
-    const interval = setInterval(loadShop, 15000);
-    return () => clearInterval(interval);
   }, [loadShop]);
 
   const handleUploadComplete = (dataType, result) => {
