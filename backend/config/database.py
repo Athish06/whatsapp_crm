@@ -41,50 +41,60 @@ class Database:
         db = cls.get_database()
         
         try:
-            # Drop legacy unique indexes before creating campaign-scoped variants.
+            # ── Drop legacy indexes that conflict with the new schema ──────────
+            for legacy_index in [
+                "unique_customer_phone",
+                "unique_customer_phone_v2",
+            ]:
+                try:
+                    await db.customers.drop_index(legacy_index)
+                except Exception:
+                    pass
+
+            # ── 1. customers collection ───────────────────────────────────────
+            # Per spec: identity-only. Unique key = (shop_id, phone).
+            await db.customers.create_index(
+                [("shop_id", 1), ("phone", 1)],
+                unique=True,
+                name="unique_shop_customer_phone",
+            )
+            await db.customers.create_index([("user_id", 1)])
+            await db.customers.create_index([("shop_id", 1)])
+            await db.customers.create_index([("customer_id", 1)])
+
+            # ── 2. files collection ───────────────────────────────────────────
             try:
-                await db.customers.drop_index("unique_customer_phone")
+                await db.files.drop_index("unique_file_upload")
             except Exception:
                 pass
-
-            # 1. customers collection - ensure unique phone per user
-            await db.customers.create_index(
-                [("user_id", 1), ("campaign_id", 1), ("phone", 1)],
-                unique=True,
-                name="unique_customer_phone"
-            )
-            await db.customers.create_index([("user_id", 1), ("campaign_id", 1), ("segment", 1)])
-            await db.customers.create_index([("segment", 1)])
-            await db.customers.create_index([("priority", 1)])
-            await db.customers.create_index([("rfm_score", -1)])
-            
-            # 2. files collection - prevent duplicate file uploads
             await db.files.create_index(
                 [("user_id", 1), ("original_file_name", 1), ("file_size", 1)],
                 unique=True,
-                name="unique_file_upload"
+                name="unique_file_upload",
             )
-            await db.files.create_index([("user_id", 1), ("data_purpose", 1), ("linked_customer_file_id", 1)])
-            await db.files.create_index([("user_id", 1), ("campaign_id", 1), ("data_purpose", 1)])
-            
-            # 3. templates collection
+            await db.files.create_index([("user_id", 1), ("data_purpose", 1)])
+            await db.files.create_index([("shop_id", 1)])
+
+            # ── 3. templates collection ───────────────────────────────────────
             await db.templates.create_index([("user_id", 1)])
             await db.templates.create_index([("segment_target", 1)])
-            
-            # 4. campaigns collection
+            await db.templates.create_index([("shop_id", 1)])
+
+            # ── 4. campaigns collection ───────────────────────────────────────
             await db.campaigns.create_index([("user_id", 1)])
             await db.campaigns.create_index([("status", 1)])
             await db.campaigns.create_index([("created_at", -1)])
-            await db.campaigns.create_index([("file_id", 1)])
-            
-            # 5. batches collection
+            await db.campaigns.create_index([("shop_id", 1)])
+
+            # ── 5. batches collection ─────────────────────────────────────────
             await db.batches.create_index([("user_id", 1)])
             await db.batches.create_index([("campaign_id", 1)])
             await db.batches.create_index([("status", 1)])
             await db.batches.create_index([("priority", 1)])
             await db.batches.create_index([("start_time", 1)])
-            
-            # 6. messages collection (message queue)
+            await db.batches.create_index([("shop_id", 1)])
+
+            # ── 6. messages collection ────────────────────────────────────────
             await db.messages.create_index([("user_id", 1)])
             await db.messages.create_index([("batch_id", 1)])
             await db.messages.create_index([("customer_id", 1)])
@@ -92,77 +102,93 @@ class Database:
             await db.messages.create_index([("phone_number", 1)])
             await db.messages.create_index([("priority", 1)])
             await db.messages.create_index([("created_at", -1)])
-            await db.messages.create_index(
-                [("batch_id", 1), ("customer_id", 1)],
-                unique=True,
-                name="unique_batch_customer_message"
-            )
+            await db.messages.create_index([("shop_id", 1)])
+            try:
+                await db.messages.create_index(
+                    [("batch_id", 1), ("customer_id", 1)],
+                    unique=True,
+                    name="unique_batch_customer_message",
+                )
+            except Exception:
+                pass
 
-            # 6b. msg_queues collection (waiting-room queue)
+            # ── 6b. msg_queues collection ─────────────────────────────────────
             await db.msg_queues.create_index([("user_id", 1)])
             await db.msg_queues.create_index([("status", 1)])
             await db.msg_queues.create_index([("priority", 1)])
             await db.msg_queues.create_index([("scheduled_at", 1)])
             await db.msg_queues.create_index([("batch_id", 1)])
-            await db.msg_queues.create_index([("message_id", 1), ("user_id", 1)], unique=True)
-            
-            # 7. users collection
+            try:
+                await db.msg_queues.create_index(
+                    [("message_id", 1), ("user_id", 1)],
+                    unique=True,
+                )
+            except Exception:
+                pass
+
+            # ── 7. users collection ───────────────────────────────────────────
             await db.users.create_index([("email", 1)], unique=True)
 
-            # 7b. campaign_batches collection (live delivery map)
+            # ── 7b. campaign_batches collection ───────────────────────────────
             await db.campaign_batches.create_index([("user_id", 1)])
             await db.campaign_batches.create_index([("campaign_id", 1)])
             await db.campaign_batches.create_index([("batch_id", 1)])
             await db.campaign_batches.create_index([("status", 1)])
-            await db.campaign_batches.create_index([("priority", 1)])
-            await db.campaign_batches.create_index([("campaign_id", 1), ("batch_id", 1), ("user_id", 1)], unique=True)
+            try:
+                await db.campaign_batches.create_index(
+                    [("campaign_id", 1), ("batch_id", 1), ("user_id", 1)],
+                    unique=True,
+                )
+            except Exception:
+                pass
 
-            # NEW: shops collection
+            # ── 8. shops collection ───────────────────────────────────────────
             await db.shops.create_index([("user_id", 1)])
-            await db.shops.create_index(
-                [("user_id", 1), ("shop_name", 1)],
-                unique=True,
-                name="unique_user_shop_name"
-            )
-            
-            # NEW: product_inventory collection
+            try:
+                await db.shops.create_index(
+                    [("user_id", 1), ("shop_name", 1)],
+                    unique=True,
+                    name="unique_user_shop_name",
+                )
+            except Exception:
+                pass
+
+            # ── 9. product_inventory collection ──────────────────────────────
             await db.product_inventory.create_index([("shop_id", 1)])
             await db.product_inventory.create_index([("product_id", 1)])
-            await db.product_inventory.create_index(
-                [("shop_id", 1), ("product_id", 1)],
-                unique=True,
-                name="unique_shop_product"
-            )
-            
+            try:
+                await db.product_inventory.create_index(
+                    [("shop_id", 1), ("product_id", 1)],
+                    unique=True,
+                    name="unique_shop_product",
+                )
+            except Exception:
+                pass
 
-            # NEW: customer_insights collection (3-layer architecture cache)
+            # ── 10. customer_insights collection ─────────────────────────────
+            # Critical: (shop_id, customer_id) → unique
             await db.customer_insights.create_index([("shop_id", 1)])
             await db.customer_insights.create_index([("customer_id", 1)])
             await db.customer_insights.create_index([("segment", 1)])
-            await db.customer_insights.create_index(
-                [("shop_id", 1), ("customer_id", 1)],
-                unique=True,
-                name="unique_shop_customer_insight"
-            )
+            await db.customer_insights.create_index([("updated_at", -1)])
+            try:
+                await db.customer_insights.create_index(
+                    [("shop_id", 1), ("customer_id", 1)],
+                    unique=True,
+                    name="unique_shop_customer_insight",
+                )
+            except Exception:
+                pass
 
-            # NEW: transactions collection
+            # ── 11. transactions collection ───────────────────────────────────
+            # Per spec composite indexes:
+            await db.transactions.create_index([("shop_id", 1), ("customer_id", 1)])
+            await db.transactions.create_index([("shop_id", 1), ("purchase_date", -1)])
+            await db.transactions.create_index([("shop_id", 1), ("product_id", 1)])
             await db.transactions.create_index([("shop_id", 1)])
             await db.transactions.create_index([("customer_id", 1)])
             await db.transactions.create_index([("product_id", 1)])
             await db.transactions.create_index([("purchase_date", -1)])
-            await db.transactions.create_index(
-                [("shop_id", 1), ("customer_id", 1), ("product_id", 1), ("purchase_date", 1)],
-                name="shop_transaction_lookup"
-            )
-
-            # ADDED indexes to Existing Collections for 'Shop-First' paradigm
-            await db.customers.create_index([("shop_id", 1)])
-            await db.campaigns.create_index([("shop_id", 1)])
-            await db.files.create_index([("shop_id", 1)])
-            await db.batches.create_index([("shop_id", 1)])
-            await db.templates.create_index([("shop_id", 1)])
-            await db.messages.create_index([("shop_id", 1)])
-            await db.msg_queues.create_index([("shop_id", 1)])
 
             logger.info("Database indexes created successfully")
         

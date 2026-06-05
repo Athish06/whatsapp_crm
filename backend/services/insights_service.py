@@ -8,6 +8,12 @@ Computes and caches ALL derived customer intelligence in one place:
 The customer_insights collection is the SINGLE SOURCE OF TRUTH for all computed
 customer data. It can be safely deleted and regenerated from raw transactions.
 
+Per schema spec:
+  - Reads 'purchase_qty' and 'total_amount' from transactions (renamed fields)
+  - Stores 'recency_days' (renamed from 'recency')
+  - Stores 'updated_at' timestamp
+  - Does NOT write back to customers collection (customers = identity only)
+
 Usage:
     await recalculate_all_insights(db, shop_id)
 """
@@ -40,7 +46,7 @@ async def recalculate_all_insights(db: AsyncIOMotorDatabase, shop_id: str) -> in
     Returns:
         Number of customer insight documents written.
     """
-    # ── Step 1: Load transactions ──────────────────────────────────────
+    # ── Step 1: Load transactions ──────────────────────────────────────────
     tx_cursor = db.transactions.find({"shop_id": shop_id}, {"_id": 0})
     tx_rows = [doc async for doc in tx_cursor]
 
@@ -53,26 +59,46 @@ async def recalculate_all_insights(db: AsyncIOMotorDatabase, shop_id: str) -> in
     tx_df = pd.DataFrame(tx_rows)
     tx_df["purchase_date"] = pd.to_datetime(tx_df["purchase_date"], errors="coerce")
     tx_df = tx_df.dropna(subset=["purchase_date"])
-    tx_df["quantity"] = pd.to_numeric(tx_df["quantity"], errors="coerce").fillna(1).astype(int)
-    tx_df["amount"] = pd.to_numeric(tx_df["amount"], errors="coerce").fillna(0)
+
+    # ── Support both old field names (quantity/amount) and new spec names (purchase_qty/total_amount)
+    # This ensures the pipeline works regardless of which upload version created the transactions.
+    if "purchase_qty" in tx_df.columns:
+        tx_df["quantity"] = pd.to_numeric(tx_df["purchase_qty"], errors="coerce").fillna(1).astype(int)
+    elif "quantity" in tx_df.columns:
+        tx_df["quantity"] = pd.to_numeric(tx_df["quantity"], errors="coerce").fillna(1).astype(int)
+    else:
+        tx_df["quantity"] = 1
+
+    if "total_amount" in tx_df.columns:
+        tx_df["amount"] = pd.to_numeric(tx_df["total_amount"], errors="coerce").fillna(0)
+    elif "amount" in tx_df.columns:
+        tx_df["amount"] = pd.to_numeric(tx_df["amount"], errors="coerce").fillna(0)
+    else:
+        tx_df["amount"] = 0
 
     if tx_df.empty:
         await db.customer_insights.delete_many({"shop_id": shop_id})
         return 0
 
-    # ── Step 2: Load products ──────────────────────────────────────────
+    # ── Step 2: Load products ──────────────────────────────────────────────
     prod_cursor = db.product_inventory.find(
         {"shop_id": shop_id},
         {"_id": 0, "product_id": 1, "product_name": 1, "category": 1,
-         "price": 1, "unit_price": 1, "unit": 1, "quantity_per_unit": 1,
-         "product_type": 1},
+         "price_per_unit": 1, "price": 1, "unit": 1,
+         "is_premium": 1, "is_bulk": 1, "product_type": 1},
     )
     prod_rows = [doc async for doc in prod_cursor]
     products_df = pd.DataFrame(prod_rows) if prod_rows else pd.DataFrame(
-        columns=["product_id", "product_name", "category", "price", "product_type"]
+        columns=["product_id", "product_name", "category", "price_per_unit", "product_type"]
     )
 
-    # ── Step 3: Compute foundational metrics per customer ──────────────
+    # Normalise price column: support both price_per_unit (new) and price (legacy)
+    if "price_per_unit" in products_df.columns:
+        products_df["price"] = pd.to_numeric(products_df["price_per_unit"], errors="coerce").fillna(0)
+    elif "price" not in products_df.columns:
+        products_df["price"] = 0
+
+    # ── Step 3: Compute foundational metrics per customer ──────────────────
     today = pd.Timestamp.now()
 
     agg_df = tx_df.groupby("customer_id").agg(
@@ -83,13 +109,13 @@ async def recalculate_all_insights(db: AsyncIOMotorDatabase, shop_id: str) -> in
         total_quantity=("quantity", "sum"),
     ).reset_index()
 
-    agg_df["recency"] = (today - agg_df["recency_date"]).dt.days.clip(lower=0)
-    agg_df["recency_raw"] = agg_df["recency"]
+    agg_df["recency_days"] = (today - agg_df["recency_date"]).dt.days.clip(lower=0)
+    agg_df["recency_raw"] = agg_df["recency_days"]
 
     # Bulkiness = avg items per transaction row
     agg_df["bulkiness"] = (agg_df["total_quantity"] / agg_df["purchase_count"]).fillna(0)
 
-    # ── Step 4: Level 1 — RFM Quintile Scoring ────────────────────────
+    # ── Step 4: Level 1 — RFM Quintile Scoring ────────────────────────────
     agg_df = _compute_rfm_scores(agg_df)
 
     # Store average bulkiness for waterfall
@@ -100,7 +126,7 @@ async def recalculate_all_insights(db: AsyncIOMotorDatabase, shop_id: str) -> in
         lambda row: _waterfall_segment(row, store_avg_bulkiness), axis=1
     )
 
-    # ── Step 5: Level 2 — Behavioral Profiling ─────────────────────────
+    # ── Step 5: Level 2 — Behavioral Profiling ────────────────────────────
     behavior_docs = build_customer_profiles(
         tx_df=tx_df,
         products_df=products_df,
@@ -113,7 +139,7 @@ async def recalculate_all_insights(db: AsyncIOMotorDatabase, shop_id: str) -> in
     for bdoc in behavior_docs:
         behavior_map[bdoc["customer_id"]] = bdoc
 
-    # ── Step 6: Merge & Persist ────────────────────────────────────────
+    # ── Step 6: Merge & Persist ────────────────────────────────────────────
     now_iso = datetime.now(timezone.utc).isoformat()
     insight_docs: List[Dict[str, Any]] = []
 
@@ -125,8 +151,8 @@ async def recalculate_all_insights(db: AsyncIOMotorDatabase, shop_id: str) -> in
             "shop_id": shop_id,
             "customer_id": cust_id,
 
-            # ── Foundational Metrics ──
-            "recency": int(row["recency"]),
+            # ── Level 1 — RFM ──
+            "recency_days": int(row["recency_days"]),    # renamed per spec (was 'recency')
             "frequency": int(row["frequency"]),
             "monetary": float(row["monetary"]),
             "purchase_count": int(row["purchase_count"]),
@@ -156,7 +182,9 @@ async def recalculate_all_insights(db: AsyncIOMotorDatabase, shop_id: str) -> in
             "total_transactions": behavior.get("total_transactions", int(row["purchase_count"])),
             "last_purchase_date": behavior.get("last_purchase_date"),
 
+            # ── Metadata ──
             "last_calculated_at": now_iso,
+            "updated_at": now_iso,                        # NEW per spec
         }
         insight_docs.append(doc)
 
@@ -168,34 +196,11 @@ async def recalculate_all_insights(db: AsyncIOMotorDatabase, shop_id: str) -> in
             f"[Insights] Stored {len(insight_docs)} customer insights for shop {shop_id}"
         )
 
-    # Sync segment + RFM scores back to customers collection for backward compat.
-    # This keeps customers.segment in sync so existing frontend segment filters work.
-    from pymongo import UpdateOne
-    cust_ops = []
-    for doc in insight_docs:
-        cust_ops.append(
-            UpdateOne(
-                {"shop_id": shop_id, "customer_id": doc["customer_id"]},
-                {"$set": {
-                    "segment": doc["segment"],
-                    "category": doc["segment"],
-                    "rfm_score": doc["rfm_score"],
-                    "r_score": doc["r_score"],
-                    "f_score": doc["f_score"],
-                    "m_score": doc["m_score"],
-                    "recency": doc["recency"],
-                    "frequency": doc["frequency"],
-                    "monetary": doc["monetary"],
-                    "total_quantity": doc["total_quantity"],
-                    "purchase_count": doc["purchase_count"],
-                }},
-            )
-        )
-    if cust_ops:
-        result = await db.customers.bulk_write(cust_ops, ordered=False)
-        logger.info(
-            f"[Insights] Synced segments to {result.modified_count} customer docs"
-        )
+    # NOTE: We do NOT write back to customers collection.
+    # Per schema spec: customers = identity only (name, phone, city, etc.)
+    # All RFM / segment data lives exclusively in customer_insights.
+    # batch_service.py already has an insights_segment_map fallback that reads
+    # directly from customer_insights for priority routing.
 
     return len(insight_docs)
 
@@ -317,7 +322,7 @@ async def migrate_behavior_to_insights(db: AsyncIOMotorDatabase) -> Dict[str, An
                     "$set": set_fields,
                     "$setOnInsert": {
                         "segment": bdoc.get("segment", "boring"),
-                        "recency": 0,
+                        "recency_days": 0,
                         "frequency": 1,
                         "monetary": float(bdoc.get("total_spent", 0)),
                         "purchase_count": int(bdoc.get("total_transactions", 1)),
@@ -326,7 +331,8 @@ async def migrate_behavior_to_insights(db: AsyncIOMotorDatabase) -> Dict[str, An
                         "f_score": 3,
                         "m_score": 3,
                         "rfm_score": 9,
-                        "last_calculated_at": datetime.now(timezone.utc).isoformat()
+                        "last_calculated_at": datetime.now(timezone.utc).isoformat(),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
                     }
                 },
                 upsert=True
@@ -347,4 +353,3 @@ async def migrate_behavior_to_insights(db: AsyncIOMotorDatabase) -> Dict[str, An
         return {"migrated": migrated_count, "status": f"migration_done_drop_failed: {e}"}
 
     return {"migrated": migrated_count, "status": "completed"}
-

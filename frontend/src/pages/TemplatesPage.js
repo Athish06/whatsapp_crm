@@ -5,35 +5,43 @@ import { toast } from 'sonner';
 
 /* ── 8 Smart Variables ── */
 const SMART_VARS = [
-  { key: 'customer_name',                  label: 'Customer Name',                   example: 'Rahul Menon',          color: '#3ECF8E', desc: "Customer's full name" },
-  { key: 'segment',                        label: 'Segment',                          example: 'VIP',                  color: '#F59E0B', desc: 'RFM segment (VIP, At-Risk…)' },
-  { key: 'favorite_category',             label: 'Favorite Category',               example: 'Cosmetics',            color: '#8B5CF6', desc: 'Top category by weighted affinity' },
-  { key: 'favorite_premium_product',      label: 'Favorite Premium Product',        example: "L'Oréal Serum",        color: '#EC4899', desc: 'Top premium product in fav category' },
-  { key: 'favorite_bulk_product',         label: 'Favorite Bulk Product',           example: 'Rice 5kg',             color: '#3B82F6', desc: 'Top bulk product by quantity' },
-  { key: 'second_favorite_premium_product', label: '2nd Premium Product',           example: 'Maybelline Lipstick',  color: '#06B6D4', desc: 'Second highest premium product' },
-  { key: 'recently_bought_product',       label: 'Recently Bought',                 example: 'Dove Soap',            color: '#10B981', desc: 'Most recent product bought' },
-  { key: 'complementary_product',         label: 'Complementary Product',           example: 'Shampoo',              color: '#F97316', desc: 'Frequently bought alongside top product' },
+  { key: 'customer_name', label: 'Customer Name', example: 'Rahul Menon', color: '#3ECF8E', desc: "Customer's full name" },
+  { key: 'segment', label: 'Segment', example: 'VIP', color: '#F59E0B', desc: 'RFM segment (VIP, At-Risk…)' },
+  { key: 'favorite_category', label: 'Favorite Category', example: 'Cosmetics', color: '#8B5CF6', desc: 'Top category by weighted affinity' },
+  { key: 'favorite_premium_product', label: 'Favorite Premium Product', example: "L'Oréal Serum", color: '#EC4899', desc: 'Top premium product in fav category' },
+  { key: 'favorite_bulk_product', label: 'Favorite Bulk Product', example: 'Rice 5kg', color: '#3B82F6', desc: 'Top bulk product by quantity' },
+  { key: 'second_favorite_premium_product', label: '2nd Premium Product', example: 'Maybelline Lipstick', color: '#06B6D4', desc: 'Second highest premium product' },
+  { key: 'recently_bought_product', label: 'Recently Bought', example: 'Dove Soap', color: '#10B981', desc: 'Most recent product bought' },
+  { key: 'complementary_product', label: 'Complementary Product', example: 'Shampoo', color: '#F97316', desc: 'Frequently bought alongside top product' },
 ];
 
 /* ── Quick starter templates ── */
 const QUICK_TEMPLATES = [
-  { name: 'VIP Exclusive Offer', segment: 'vip',
-    content: `Hi {{customer_name}} 👑\n\nAs one of our VIP Champions, you deserve the best!\n\nYour favourite pick: *{{favorite_premium_product}}*\n\nWe have an exclusive offer waiting for you in {{favorite_category}}. Don't miss it! 🎁\n\nReply YES to know more.` },
-  { name: 'Win-Back At-Risk', segment: 'at_risk',
-    content: `Hi {{customer_name}}, we miss you! 😢\n\nIt's been a while. We noticed you loved *{{recently_bought_product}}* — and we have something even better now.\n\nCome back today and enjoy a special discount just for you!\n\nReply BACK to claim your offer.` },
-  { name: 'Bulk Buyer Deal', segment: 'potential_bulk',
-    content: `Hello {{customer_name}}! 📦\n\nWe know you love buying in bulk — your top pick *{{favorite_bulk_product}}* is now available at a special rate!\n\nStock up and save more. Reply BULK to see the offer.` },
-  { name: 'Loyalty Reward', segment: 'loyal_frequent',
-    content: `Hi {{customer_name}} ⚡\n\nYou're one of our most loyal customers and we appreciate that!\n\nAs a {{segment}} member, you get early access to new arrivals in *{{favorite_category}}*.\n\nPair *{{favorite_premium_product}}* with *{{complementary_product}}* for a complete experience!` },
+  {
+    name: 'VIP Exclusive Offer', segment: 'vip',
+    content: `Hi {{customer_name}} 👑\n\nAs one of our VIP Champions, you deserve the best!\n\nYour favourite pick: {{favorite_premium_product}}\n\nWe have an exclusive offer waiting for you in {{favorite_category}}. Don't miss it! 🎁\n\nReply YES to know more.`
+  },
+  {
+    name: 'Win-Back At-Risk', segment: 'at_risk',
+    content: `Hi {{customer_name}}, we miss you! 😢\n\nIt's been a while. We noticed you loved {{recently_bought_product}} — and we have something even better now.\n\nCome back today and enjoy a special discount just for you!\n\nReply BACK to claim your offer.`
+  },
+  {
+    name: 'Bulk Buyer Deal', segment: 'potential_bulk',
+    content: `Hello {{customer_name}}! 📦\n\nWe know you love buying in bulk — your top pick {{favorite_bulk_product}} is now available at a special rate!\n\nStock up and save more. Reply BULK to see the offer.`
+  },
+  {
+    name: 'Loyalty Reward', segment: 'loyal_frequent',
+    content: `Hi {{customer_name}} ⚡\n\nYou're one of our most loyal customers and we appreciate that!\n\nAs a {{segment}} member, you get early access to new arrivals in {{favorite_category}}.\n\nPair {{favorite_premium_product}} with {{complementary_product}} for a complete experience!`
+  },
 ];
 
 const segments = [
-  { value: 'all',            label: 'All',            icon: Users,         color: '#6B7280' },
-  { value: 'vip',            label: 'VIP',            icon: Crown,         color: '#F59E0B' },
-  { value: 'at_risk',        label: 'At-Risk',        icon: AlertTriangle, color: '#EF4444' },
-  { value: 'potential_bulk', label: 'Bulk',           icon: Package,       color: '#8B5CF6' },
-  { value: 'loyal_frequent', label: 'Loyal',          icon: Zap,           color: '#3B82F6' },
-  { value: 'boring',         label: 'Boring',         icon: User,          color: '#6B7280' },
+  { value: 'all', label: 'All', icon: Users, color: '#6B7280' },
+  { value: 'vip', label: 'VIP', icon: Crown, color: '#F59E0B' },
+  { value: 'at_risk', label: 'At-Risk', icon: AlertTriangle, color: '#EF4444' },
+  { value: 'potential_bulk', label: 'Bulk', icon: Package, color: '#8B5CF6' },
+  { value: 'loyal_frequent', label: 'Loyal', icon: Zap, color: '#3B82F6' },
+  { value: 'boring', label: 'Boring', icon: User, color: '#6B7280' },
 ];
 
 /* ── WhatsApp Bubble (renders hydrated text) ── */
