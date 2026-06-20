@@ -389,11 +389,18 @@ const ShopDashboardPage = () => {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* RFM Segmentation */}
         <div className="bg-[#1C1C1C] border border-[#2E2E2E] rounded-lg p-6">
-          <div className="flex items-center mb-6">
-            <Activity className="w-6 h-6 text-[#3ECF8E] mr-3" />
-            <h2 className="text-xl font-semibold" style={{ fontFamily: 'Chivo, sans-serif' }}>
-              RFM Segmentation
-            </h2>
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center">
+              <Activity className="w-6 h-6 text-[#3ECF8E] mr-3" />
+              <h2 className="text-xl font-semibold" style={{ fontFamily: 'Chivo, sans-serif' }}>
+                RFM Segmentation
+              </h2>
+            </div>
+            {shop.insights_last_updated && (
+              <span className="text-xs text-muted-foreground">
+                Updated: {new Date(shop.insights_last_updated).toLocaleString()}
+              </span>
+            )}
           </div>
           {hasSegments ? (
             <div>

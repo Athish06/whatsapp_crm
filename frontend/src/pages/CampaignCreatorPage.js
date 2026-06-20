@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { Users, Tag, Send, Activity, Settings, ArrowLeft, MessageCircle, Calendar, Hash } from 'lucide-react';
+import { Users, Tag, Send, Activity, Settings, ArrowLeft, MessageCircle, Calendar, Hash, Plus } from 'lucide-react';
 import { toast } from 'sonner';
 import { shopsAPI, templatesAPI, customersAPI, batchesAPI } from '../lib/api';
 
@@ -47,6 +47,17 @@ const CampaignCreatorPage = () => {
   const [scheduledTime, setScheduledTime] = useState('');
   const [batchSize, setBatchSize] = useState(100);
   const [launching, setLaunching] = useState(false);
+
+  // Navigate to templates builder carrying context to auto-redirect back
+  const handleQuickCreateTemplate = (segment) => {
+    navigate('/templates', {
+      state: {
+        redirectToCampaign: true,
+        prefilledShopId: shopId,
+        prefilledSegment: segment,
+      },
+    });
+  };
 
   // Load real data
   useEffect(() => {
@@ -324,7 +335,8 @@ const CampaignCreatorPage = () => {
               <h4 className="font-medium">Map Templates to Segments</h4>
               {templates.length === 0 ? (
                 <div className="bg-[#121212] border border-[#2E2E2E] p-4 rounded-md text-sm text-muted-foreground text-center">
-                  No templates found. <Link to="/templates" className="text-[#3ECF8E] hover:underline">Create templates first.</Link>
+                  No templates found.{' '}
+                  <button onClick={() => handleQuickCreateTemplate('all')} className="text-[#3ECF8E] hover:underline">Create templates first.</button>
                 </div>
               ) : (
                 segmentKeys.map((segment) => (
@@ -333,16 +345,25 @@ const CampaignCreatorPage = () => {
                       <span className="capitalize text-sm font-medium">{segment.replace('_', ' ')}</span>
                       <span className="text-xs text-muted-foreground ml-2">({segmentCounts[segment] || 0})</span>
                     </div>
-                    <select
-                      value={segmentTemplates[segment]}
-                      onChange={(e) => setSegmentTemplates({ ...segmentTemplates, [segment]: e.target.value })}
-                      className="w-2/3 bg-[#1C1C1C] border border-[#2E2E2E] rounded-md px-3 py-1.5 text-sm text-white focus:outline-none focus:border-[#3ECF8E]"
-                    >
-                      <option value="">— Skip this segment —</option>
-                      {templates.map((t) => (
-                        <option key={t.id} value={t.id}>{t.name} ({t.segment || 'all'})</option>
-                      ))}
-                    </select>
+                    <div className="flex items-center gap-2 w-2/3">
+                      <select
+                        value={segmentTemplates[segment]}
+                        onChange={(e) => setSegmentTemplates({ ...segmentTemplates, [segment]: e.target.value })}
+                        className="flex-1 bg-[#1C1C1C] border border-[#2E2E2E] rounded-md px-3 py-1.5 text-sm text-white focus:outline-none focus:border-[#3ECF8E]"
+                      >
+                        <option value="">— Skip this segment —</option>
+                        {templates.map((t) => (
+                          <option key={t.id} value={t.id}>{t.name} ({t.segment || 'all'})</option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={() => handleQuickCreateTemplate(segment)}
+                        title="Create a new template for this segment"
+                        className="flex-shrink-0 flex items-center gap-1 px-2.5 py-1.5 bg-[#3ECF8E]/10 text-[#3ECF8E] border border-[#3ECF8E]/30 rounded-md hover:bg-[#3ECF8E]/20 transition-all text-xs font-semibold"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 ))
               )}

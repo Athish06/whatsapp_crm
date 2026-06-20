@@ -13,6 +13,7 @@ from typing import Dict, Any, Optional, List
 
 import pandas as pd
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo import UpdateOne
 
 logger = logging.getLogger(__name__)
 
@@ -127,10 +128,10 @@ class ProductService:
         # Drop helper columns
         df = df.drop(columns=["cat_mean", "cat_std", "premium_threshold"], errors="ignore")
 
-        # Delete existing products for this shop (full replace per upload)
-        await self.db.product_inventory.delete_many({"shop_id": shop_id})
+        # Products are upserted by (shop_id, product_id) — existing catalog is preserved.
+        # Re-uploading a smaller file only updates/adds those rows, never deletes others.
 
-        # Prepare and insert documents
+        # Prepare documents
         products = []
         uploaded_at = datetime.now(timezone.utc).isoformat()
         for _, row in df.iterrows():
@@ -150,8 +151,17 @@ class ProductService:
             products.append(doc)
 
         if products:
-            await self.db.product_inventory.insert_many(products)
-            logger.info(f"Inserted {len(products)} products for shop {shop_id}")
+            # Upsert by (shop_id, product_id) — never wipe the existing catalog
+            ops = [
+                UpdateOne(
+                    {"shop_id": doc["shop_id"], "product_id": doc["product_id"]},
+                    {"$set": doc},
+                    upsert=True
+                )
+                for doc in products
+            ]
+            await self.db.product_inventory.bulk_write(ops, ordered=False)
+            logger.info(f"Upserted {len(products)} products for shop {shop_id}")
 
         # Calculate category breakdown
         category_breakdown = df["category"].value_counts().to_dict()

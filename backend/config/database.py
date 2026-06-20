@@ -63,14 +63,17 @@ class Database:
             await db.customers.create_index([("customer_id", 1)])
 
             # ── 2. files collection ───────────────────────────────────────────
-            try:
-                await db.files.drop_index("unique_file_upload")
-            except Exception:
-                pass
+            # Drop old indexes (both possible names) before recreating with new shape
+            for old_idx in ["unique_file_upload", "unique_shop_file_upload"]:
+                try:
+                    await db.files.drop_index(old_idx)
+                except Exception:
+                    pass
+            # New index includes shop_id so same file can be uploaded to different shops
             await db.files.create_index(
-                [("user_id", 1), ("original_file_name", 1), ("file_size", 1)],
+                [("user_id", 1), ("shop_id", 1), ("original_file_name", 1), ("file_size", 1)],
                 unique=True,
-                name="unique_file_upload",
+                name="unique_shop_file_upload",
             )
             await db.files.create_index([("user_id", 1), ("data_purpose", 1)])
             await db.files.create_index([("shop_id", 1)])
@@ -118,6 +121,17 @@ class Database:
             await db.msg_queues.create_index([("priority", 1)])
             await db.msg_queues.create_index([("scheduled_at", 1)])
             await db.msg_queues.create_index([("batch_id", 1)])
+            await db.msg_queues.create_index([("next_attempt_at", 1)])
+            # Compound index for scheduler worker poll query
+            await db.msg_queues.create_index(
+                [("status", 1), ("next_attempt_at", 1)],
+                name="worker_poll_query",
+            )
+            # Compound index for fast campaign-scoped lookups
+            await db.msg_queues.create_index(
+                [("shop_id", 1), ("campaign_id", 1), ("status", 1)],
+                name="campaign_status_lookup",
+            )
             try:
                 await db.msg_queues.create_index(
                     [("message_id", 1), ("user_id", 1)],
