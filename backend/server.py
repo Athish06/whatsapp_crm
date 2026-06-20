@@ -9,7 +9,7 @@ import logging
 
 # Load environment variables
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / '.env', override=True)
 
 # Import config after loading env
 from config import Database, settings

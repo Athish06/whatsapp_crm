@@ -386,7 +386,7 @@ const TemplatesPage = () => {
     } catch { toast.error('Failed to duplicate'); }
   };
 
-  const useQuick = (qt) => {
+  const handleUseQuick = (qt) => {
     setEditing(null);
     setMode('create');
     // pre-fill via editing state trick
@@ -459,7 +459,7 @@ const TemplatesPage = () => {
                         </div>
                         <p className="text-xs text-muted-foreground line-clamp-2">{qt.content.substring(0, 100)}…</p>
                       </div>
-                      <button onClick={() => useQuick(qt)}
+                      <button onClick={() => handleUseQuick(qt)}
                         className="flex-shrink-0 px-3 py-1.5 text-xs font-medium bg-[#3ECF8E]/10 text-[#3ECF8E] border border-[#3ECF8E]/30 rounded-md hover:bg-[#3ECF8E]/20 transition-colors opacity-0 group-hover:opacity-100">
                         Use
                       </button>
