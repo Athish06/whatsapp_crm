@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # Debug Mode
     debug: bool = os.getenv("DEBUG", "False").lower() == "true"
     
+    # Messaging Provider Mode
+    provider_mode: str = os.getenv("PROVIDER_MODE", "mock")
+    
     # Email Configuration
     sender_email: str = os.getenv("SENDER_EMAIL", "")
     google_app_password: str = os.getenv("GOOGLE_APP_PASSWORD", "")

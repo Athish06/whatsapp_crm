@@ -51,12 +51,13 @@ class BatchService:
         )
 
     async def _enqueue_messages(self, messages: List[Dict[str, Any]], batch: Dict[str, Any]) -> None:
-        """Mirror pending messages into msg_queues waiting-room collection."""
+        """Mirror pending messages into msg_queues with all scheduler-required fields."""
         if not messages:
             return
 
         queue_docs: List[Dict[str, Any]] = []
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
         for msg in messages:
             queue_docs.append(
                 {
@@ -65,14 +66,21 @@ class BatchService:
                     "user_id": msg["user_id"],
                     "campaign_id": batch.get("campaign_id"),
                     "batch_id": msg["batch_id"],
+                    "shop_id": batch.get("shop_id"),
                     "customer_id": msg["customer_id"],
+                    "customer_name": msg.get("customer_name", ""),
                     "phone_number": msg["phone_number"],
                     "customer_segment": msg.get("customer_segment", "boring"),
+                    "message_content": msg.get("message_content", ""),
                     "status": "pending",
                     "priority": msg.get("priority", 4),
                     "scheduled_at": msg.get("scheduled_at"),
-                    "created_at": now,
-                    "updated_at": now,
+                    "next_attempt_at": now,
+                    "retry_count": 0,
+                    "error_log": [],
+                    "is_sandbox_test": False,
+                    "created_at": now_iso,
+                    "updated_at": now_iso,
                 }
             )
 
@@ -174,7 +182,7 @@ class BatchService:
                 "file_id": file_id,
                 "ai_mode": ai_mode,
                 "fixed_product": fixed_product,
-                "status": "pending",
+                "status": "sending",
                 "total_customers": len(customers),
                 "total_batches": math.ceil(len(customers) / batch_size),
                 "completed_batches": 0,
@@ -451,115 +459,6 @@ class BatchService:
             "queue_cancelled": queue_result.modified_count,
         }
 
-    async def process_pending_batches(self, user_id: str, cooldown_seconds: int = 30):
-        """Background task: process pending batches sequentially with smart cooldown."""
-        await asyncio.sleep(2)  # Let the HTTP response return first
-
-        while True:
-            # Next pending batch ordered by priority ASC then created_at ASC
-            batch = await self.db.batches.find_one(
-                {"user_id": user_id, "status": BatchStatus.PENDING.value},
-                {"_id": 0},
-                sort=[("priority", 1), ("created_at", 1)]
-            )
-            if not batch:
-                break
-
-            # Mark as sending
-            await self.db.batches.update_one(
-                {"id": batch["id"]},
-                {"$set": {"status": BatchStatus.SENDING.value,
-                          "started_at": datetime.now(timezone.utc).isoformat()}}
-            )
-            await self._sync_campaign_batch_from_batch(batch["id"], user_id)
-
-            # Fetch pending queue items for this batch
-            queue_items = await self.db.msg_queues.find(
-                {"batch_id": batch["id"], "user_id": user_id, "status": "pending"},
-                {"_id": 0, "message_id": 1, "priority": 1, "scheduled_at": 1}
-            ).sort([("priority", 1), ("scheduled_at", 1)]).to_list(10000)
-
-            message_ids = [q["message_id"] for q in queue_items if q.get("message_id")]
-
-            if not message_ids:
-                await self.db.batches.update_one(
-                    {"id": batch["id"]},
-                    {"$set": {"status": BatchStatus.COMPLETED.value,
-                              "pending_count": 0,
-                              "completed_at": datetime.now(timezone.utc).isoformat()}}
-                )
-                await self._sync_campaign_batch_from_batch(batch["id"], user_id)
-                if batch.get("campaign_id"):
-                    await self._update_campaign_stats(batch["campaign_id"])
-                continue
-
-            raw_messages = await self.db.messages.find(
-                {"id": {"$in": message_ids}, "status": MessageStatus.PENDING.value},
-                {"_id": 0}
-            ).to_list(10000)
-            message_map = {m["id"]: m for m in raw_messages}
-            messages = [message_map[mid] for mid in message_ids if mid in message_map]
-
-            success_count = 0
-            failed_count = 0
-
-            for message in messages:
-                # Check if this batch was cancelled mid-flight
-                fresh_batch = await self.db.batches.find_one(
-                    {"id": batch["id"]}, {"_id": 0, "status": 1}
-                )
-                if fresh_batch and fresh_batch.get("status") == "cancelled":
-                    break
-
-                await self.db.msg_queues.update_one(
-                    {"message_id": message["id"], "user_id": user_id},
-                    {"$set": {"status": "processing",
-                              "updated_at": datetime.now(timezone.utc).isoformat()}}
-                )
-                await asyncio.sleep(1.5)  # Simulate 1.5s per message
-
-                if random.random() < 0.95:
-                    await self.db.messages.update_one(
-                        {"id": message["id"]},
-                        {"$set": {"status": MessageStatus.SENT.value,
-                                  "sent_at": datetime.now(timezone.utc).isoformat()}}
-                    )
-                    await self.db.msg_queues.delete_one(
-                        {"message_id": message["id"], "user_id": user_id}
-                    )
-                    success_count += 1
-                else:
-                    await self.db.messages.update_one(
-                        {"id": message["id"]},
-                        {"$set": {"status": MessageStatus.FAILED.value,
-                                  "error": "Network timeout"}}
-                    )
-                    await self.db.msg_queues.delete_one(
-                        {"message_id": message["id"], "user_id": user_id}
-                    )
-                    failed_count += 1
-
-            final_status = BatchStatus.COMPLETED.value if failed_count == 0 else BatchStatus.FAILED.value
-            await self.db.batches.update_one(
-                {"id": batch["id"]},
-                {"$set": {"status": final_status,
-                          "success_count": success_count,
-                          "failed_count": failed_count,
-                          "pending_count": 0,
-                          "completed_at": datetime.now(timezone.utc).isoformat()}}
-            )
-            await self._sync_campaign_batch_from_batch(batch["id"], user_id)
-            if batch.get("campaign_id"):
-                await self._update_campaign_stats(batch["campaign_id"])
-
-            # ── Smart Cooldown (Train Station delay) ────────────────────────
-            # Check if there are more pending batches; if so, wait before next
-            more = await self.db.batches.count_documents(
-                {"user_id": user_id, "status": BatchStatus.PENDING.value}
-            )
-            if more > 0:
-                await asyncio.sleep(cooldown_seconds)
-    
     async def clear_all_batches(self, user_id: str) -> Dict[str, Any]:
         """Clear all batches and messages for a user."""
         # Delete all messages for this user

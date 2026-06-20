@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { templatesAPI } from '../lib/api';
-import { Plus, Trash2, FileText, X, Crown, AlertTriangle, Package, Zap, User, Users, Copy, Edit2, Eye, ChevronDown, ChevronUp, Sparkles } from 'lucide-react';
+import { Plus, Trash2, FileText, X, Crown, AlertTriangle, Package, Zap, User, Users, Copy, Edit2, Eye, ChevronDown, ChevronUp, Sparkles, ArrowLeft } from 'lucide-react';
 import { toast } from 'sonner';
 
 /* ── 8 Smart Variables ── */
@@ -313,6 +314,11 @@ const TemplateForm = ({ initial, onSave, onCancel, saving }) => {
 
 /* ── Main Page ── */
 const TemplatesPage = () => {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const redirectState = location.state || {};
+  const isRedirect = !!redirectState.redirectToCampaign;
+
   const [templates, setTemplates] = useState([]);
   const [loading, setLoading] = useState(true);
   const [mode, setMode] = useState('list'); // 'list' | 'create' | 'edit'
@@ -320,6 +326,17 @@ const TemplatesPage = () => {
   const [saving, setSaving] = useState(false);
   const [filter, setFilter] = useState('all');
   const [showQuick, setShowQuick] = useState(true);
+
+  // Auto-open create form if redirected from campaign page
+  useEffect(() => {
+    if (isRedirect) {
+      setEditing(redirectState.prefilledSegment
+        ? { name: '', content: '', segment: redirectState.prefilledSegment }
+        : null);
+      setMode('create');
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => { load(); }, []);
 
@@ -345,6 +362,10 @@ const TemplatesPage = () => {
         toast.success('Template created');
       }
       setMode('list'); setEditing(null); await load();
+      // If we came from campaign creator, navigate back
+      if (isRedirect && redirectState.prefilledShopId) {
+        navigate(`/campaign/new/${redirectState.prefilledShopId}`, { replace: true });
+      }
     } catch { toast.error('Failed to save template'); }
     finally { setSaving(false); }
   };
@@ -382,6 +403,14 @@ const TemplatesPage = () => {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
+          {isRedirect && (
+            <button
+              onClick={() => navigate(`/campaign/new/${redirectState.prefilledShopId}`, { replace: true })}
+              className="flex items-center gap-1 text-sm text-muted-foreground hover:text-white transition-colors mb-2"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" /> Back to Campaign
+            </button>
+          )}
           <h1 className="text-4xl font-bold mb-1" style={{ fontFamily: 'Chivo, sans-serif' }}>Message Templates</h1>
           <p className="text-muted-foreground text-sm">{templates.length} templates · 8 smart personalisation variables</p>
         </div>

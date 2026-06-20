@@ -103,6 +103,17 @@ export const batchesAPI = {
   clearAll: () => api.delete('/batches/clear-all'),
   getQueueStats: () => api.get('/batches/queue/stats'),
   getFileSummary: (fileId) => api.get(`/batches/file/${fileId}/summary`),
+
+  // ── Campaign Control (Scheduler) ──
+  pauseCampaign: (campaignId) => api.post(`/batches/campaigns/${campaignId}/pause`),
+  resumeCampaign: (campaignId) => api.post(`/batches/campaigns/${campaignId}/resume`),
+  cancelCampaign: (campaignId) => api.post(`/batches/campaigns/${campaignId}/cancel`),
+  getLiveStats: (campaignId) => api.get(`/batches/campaigns/${campaignId}/live-stats`),
+  getDLQ: (campaignId) => api.get(`/batches/campaigns/${campaignId}/dlq`),
+
+  // ── Queue Item Actions (DLQ Resolution) ──
+  requeueItem: (itemId) => api.post(`/batches/queue/${itemId}/requeue`),
+  resolveItem: (itemId) => api.post(`/batches/queue/${itemId}/resolve`),
 };
 
 // API endpoints for files

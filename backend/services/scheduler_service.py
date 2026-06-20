@@ -1,292 +1,547 @@
 """
-Message queue scheduler service for processing scheduled messages.
-Implements the 60-second heartbeat to send WhatsApp messages with throttling and retry logic.
+Scheduler Worker — Asynchronous State Machine Engine
+=====================================================
+Non-blocking event-loop polling worker that processes the msg_queues
+collection using the full 8-state lifecycle:
+
+    pending → processing → delivered | retry_wait → failed_final
+
+Architecture:
+    - APScheduler interval trigger polls every POLL_INTERVAL_SECONDS
+    - Picks micro-batches of MICRO_BATCH_SIZE items per cycle
+    - Checks campaign status before each item (respects pause/cancel)
+    - Calls ProviderAdapter.send_message() for actual delivery
+    - Applies random jitter throttle (3.5–5.0s) between messages
+    - Exponential retry backoff: 2 minutes between retries, max 3 attempts
+    - Batch cooldown: 15–30s pause between micro-batch groups
+
+Timing Parameters (Configurable Boundary Matrix):
+    POLL_INTERVAL_SECONDS   = 7       (how often the heartbeat fires)
+    MICRO_BATCH_SIZE        = 8       (items per poll cycle, range 5–10)
+    INTER_MSG_JITTER_MIN    = 3.5     (seconds, min delay between messages)
+    INTER_MSG_JITTER_MAX    = 5.0     (seconds, max delay between messages)
+    BATCH_COOLDOWN_MIN      = 15      (seconds, min pause between micro-batches)
+    BATCH_COOLDOWN_MAX      = 30      (seconds, max pause between micro-batches)
+    RETRY_BACKOFF_SECONDS   = 120     (2 minutes between retry attempts)
+    MAX_RETRY_COUNT         = 3       (max attempts before failed_final)
 """
 import logging
-import time
 import asyncio
-from datetime import datetime, timezone
-from typing import List, Dict, Any
+import random
+from datetime import datetime, timezone, timedelta
+from typing import Dict, Any, List
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from services.provider_adapter import ProviderAdapter
+
 logger = logging.getLogger(__name__)
 
+# ── Configurable Boundary Matrix ──────────────────────────────────────────────
+POLL_INTERVAL_SECONDS = 7
+MICRO_BATCH_SIZE = 8
+INTER_MSG_JITTER_MIN = 3.5
+INTER_MSG_JITTER_MAX = 5.0
+BATCH_COOLDOWN_MIN = 15
+BATCH_COOLDOWN_MAX = 30
+RETRY_BACKOFF_SECONDS = 120
+MAX_RETRY_COUNT = 3
 
-class MessageQueueScheduler:
+
+class SchedulerWorker:
     """
-    Scheduler service for processing message queue.
-    Runs every 60 seconds to fetch and send pending messages.
+    Background async worker that processes the msg_queues collection.
+    Replaces the old MessageQueueScheduler with full state machine logic.
     """
-    
+
     def __init__(self, db: Any):
         self.db = db
         self.scheduler = AsyncIOScheduler()
-        self.is_running = False
-        self.batch_size = 50  # Max messages to process per cycle
-        self.throttle_delay = 1.5  # Seconds between messages
-        self.max_retry_count = 3
-    
-    async def fetch_pending_messages(self) -> List[Dict[str, Any]]:
-        """
-        Fetch pending messages that are due for sending.
-        Query: status == 'pending' AND scheduled_at <= Current_Time_UTC
-        Sorted by: priority (ASC), scheduled_at (ASC)
-        Limit: 50 messages per cycle
-        """
-        current_time = datetime.now(timezone.utc)
-        
-        # Find pending messages that are due
-        cursor = self.db.messages.find({
-            "status": "pending",
-            "scheduled_at": {"$lte": current_time}
-        }).sort([
-            ("priority", 1),      # VIP (1) first, Regular (4) last
-            ("scheduled_at", 1)   # Older messages first
-        ]).limit(self.batch_size)
-        
-        messages = await cursor.to_list(length=self.batch_size)
-        
-        logger.info(f"Fetched {len(messages)} pending messages for processing")
-        return messages
-    
-    async def mark_messages_processing(self, message_ids: List[str]) -> int:
-        """
-        Mark messages as 'processing' to prevent duplicate processing by other workers.
-        This is the "Fetch and Lock" mechanism for concurrency safety.
-        """
-        result = await self.db.messages.update_many(
-            {"id": {"$in": message_ids}},
-            {"$set": {"status": "processing"}}
-        )
-        
-        logger.info(f"Marked {result.modified_count} messages as processing")
-        return result.modified_count
-    
-    async def send_whatsapp_message(self, phone_number: str, message_content: str) -> Dict[str, Any]:
-        """
-        Send a WhatsApp message via WhatsApp Business API.
-        
-        TODO: Integrate with actual WhatsApp Business API
-        For now, this is a mock implementation.
-        
-        Args:
-            phone_number: Recipient's phone number
-            message_content: Message text to send
-            
-        Returns:
-            Dict with 'success' boolean and optional 'error' message
-        """
-        try:
-            # TODO: Replace with actual WhatsApp API call
-            # Example:
-            # response = await whatsapp_api.send_message(
-            #     to=phone_number,
-            #     body=message_content
-            # )
-            
-            # Mock successful send for now
-            logger.info(f"[MOCK] Sending message to {phone_number}: {message_content[:50]}...")
-            await asyncio.sleep(0.1)  # Simulate API call
-            
-            return {"success": True}
-        
-        except Exception as e:
-            logger.error(f"Error sending message to {phone_number}: {str(e)}")
-            return {"success": False, "error": str(e)}
-    
-    async def process_message(self, message: Dict[str, Any]) -> bool:
-        """
-        Process a single message: send via WhatsApp and update status.
-        
-        Returns:
-            True if successful, False if failed
-        """
-        message_id = message["id"]
-        phone_number = message["phone_number"]
-        message_content = message["message_content"]
-        
-        # Send the message
-        result = await self.send_whatsapp_message(phone_number, message_content)
-        
-        if result["success"]:
-            # Mark as sent
-            await self.db.messages.update_one(
-                {"id": message_id},
-                {
-                    "$set": {
-                        "status": "sent",
-                        "processed_at": datetime.now(timezone.utc)
-                    }
-                }
-            )
-            logger.info(f"✓ Message sent successfully to {phone_number}")
-            return True
-        else:
-            # Handle failure with retry logic
-            await self.handle_message_failure(message, result.get("error", "Unknown error"))
-            return False
-    
-    async def handle_message_failure(self, message: Dict[str, Any], error: str):
-        """
-        Handle message sending failure with retry mechanism.
-        
-        Retry Logic:
-        - Increment retry_count
-        - If retry_count < 3: Reset to 'pending', boost priority to 1 (VIP)
-        - If retry_count >= 3: Mark as 'failed_permanently'
-        """
-        message_id = message["id"]
-        current_retry_count = message.get("retry_count", 0)
-        new_retry_count = current_retry_count + 1
-        
-        # Get existing error log
-        error_log = message.get("error_log", [])
-        error_log.append({
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "error": error,
-            "retry_count": new_retry_count
-        })
-        
-        if new_retry_count >= self.max_retry_count:
-            # Too many retries - mark as permanently failed
-            await self.db.messages.update_one(
-                {"id": message_id},
-                {
-                    "$set": {
-                        "status": "failed_permanently",
-                        "retry_count": new_retry_count,
-                        "error_log": error_log,
-                        "processed_at": datetime.now(timezone.utc)
-                    }
-                }
-            )
-            logger.warning(f"✗ Message {message_id} marked as failed_permanently after {new_retry_count} retries")
-        else:
-            # Retry - reset to pending with priority boost
-            await self.db.messages.update_one(
-                {"id": message_id},
-                {
-                    "$set": {
-                        "status": "pending",
-                        "priority": 1,  # Boost to highest priority (VIP)
-                        "retry_count": new_retry_count,
-                        "error_log": error_log
-                    }
-                }
-            )
-            logger.warning(f"⟳ Message {message_id} reset to pending with priority boost (retry {new_retry_count}/{self.max_retry_count})")
-    
-    async def process_message_queue(self):
-        """
-        Main worker function that runs every 60 seconds.
-        This is the "heartbeat" of the scheduling system.
-        
-        Steps:
-        1. Fetch pending messages
-        2. Mark as processing (lock)
-        3. Send with throttling (1.5s delay between messages)
-        4. Handle success/failure with retry logic
-        """
-        if self.is_running:
-            logger.warning("Previous cycle still running, skipping this cycle")
-            return
-        
-        self.is_running = True
-        cycle_start = datetime.now(timezone.utc)
-        
-        try:
-            logger.info("=" * 60)
-            logger.info(f"MESSAGE QUEUE HEARTBEAT - {cycle_start.isoformat()}")
-            logger.info("=" * 60)
-            
-            # Step 1: Fetch pending messages
-            messages = await self.fetch_pending_messages()
-            
-            if not messages:
-                logger.info("No pending messages to process")
-                return
-            
-            # Step 2: Mark as processing (fetch and lock)
-            message_ids = [msg["id"] for msg in messages]
-            await self.mark_messages_processing(message_ids)
-            
-            # Step 3 & 4: Process each message with throttling
-            success_count = 0
-            failure_count = 0
-            
-            for i, message in enumerate(messages):
-                logger.info(f"Processing message {i+1}/{len(messages)} - Priority {message.get('priority', 4)}")
-                
-                # Send the message
-                success = await self.process_message(message)
-                
-                if success:
-                    success_count += 1
-                else:
-                    failure_count += 1
-                
-                # Throttle: Wait 1.5 seconds between messages (except last one)
-                if i < len(messages) - 1:
-                    logger.debug(f"Throttling: waiting {self.throttle_delay}s before next message...")
-                    await asyncio.sleep(self.throttle_delay)
-            
-            # Summary
-            cycle_duration = (datetime.now(timezone.utc) - cycle_start).total_seconds()
-            logger.info("-" * 60)
-            logger.info(f"Cycle complete: {success_count} sent, {failure_count} failed")
-            logger.info(f"Duration: {cycle_duration:.2f}s")
-            logger.info("=" * 60)
-        
-        except Exception as e:
-            logger.error(f"Error in message queue processing: {str(e)}", exc_info=True)
-        
-        finally:
-            self.is_running = False
-    
+        self._processing = False  # Guard against overlapping cycles
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Lifecycle: start / stop
+    # ──────────────────────────────────────────────────────────────────────
+
     def start(self):
-        """
-        Start the scheduler to run every 60 seconds.
-        """
+        """Start the scheduler polling heartbeat."""
         if self.scheduler.running:
-            logger.warning("Scheduler already running")
+            logger.warning("Scheduler worker already running")
             return
-        
-        # Add job to run every 60 seconds
+
         self.scheduler.add_job(
-            self.process_message_queue,
-            trigger=IntervalTrigger(seconds=60),
-            id="message_queue_worker",
-            name="Message Queue Worker",
-            max_instances=1,  # Only one instance at a time
-            replace_existing=True
+            self._poll_cycle,
+            trigger=IntervalTrigger(seconds=POLL_INTERVAL_SECONDS),
+            id="scheduler_worker_poll",
+            name="Scheduler Worker Poll",
+            max_instances=1,
+            replace_existing=True,
         )
-        
         self.scheduler.start()
-        logger.info("✓ Message queue scheduler started (60-second heartbeat)")
-    
+        logger.info(
+            f"✓ Scheduler worker started "
+            f"(poll={POLL_INTERVAL_SECONDS}s, batch={MICRO_BATCH_SIZE}, "
+            f"jitter={INTER_MSG_JITTER_MIN}-{INTER_MSG_JITTER_MAX}s)"
+        )
+
     def stop(self):
-        """
-        Stop the scheduler gracefully.
-        """
+        """Stop the scheduler gracefully."""
         if self.scheduler.running:
             self.scheduler.shutdown(wait=True)
-            logger.info("✓ Message queue scheduler stopped")
-    
-    async def get_queue_stats(self) -> Dict[str, Any]:
-        """
-        Get statistics about the message queue.
-        """
-        pipeline = [{"$group": {"_id": "$status", "count": {"$sum": 1}}}]
+            logger.info("✓ Scheduler worker stopped")
 
-        stats_cursor = self.db.msg_queues.aggregate(pipeline)
-        stats_list = await stats_cursor.to_list(length=None)
-        
-        stats = {item["_id"]: item["count"] for item in stats_list}
-        
+    # ──────────────────────────────────────────────────────────────────────
+    # Core poll cycle
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def _poll_cycle(self):
+        """
+        Main heartbeat — fires every POLL_INTERVAL_SECONDS.
+        Fetches due items and processes them as a micro-batch.
+        """
+        if self._processing:
+            return  # Previous cycle still running — skip
+        self._processing = True
+
+        try:
+            current_time = datetime.now(timezone.utc)
+
+            # ── Time-Window Fetch: find due items ──
+            query = {
+                "status": {"$in": ["pending", "retry_wait"]},
+                "next_attempt_at": {"$lte": current_time},
+            }
+            cursor = self.db.msg_queues.find(
+                query, {"_id": 0}
+            ).sort([
+                ("priority", 1),          # VIP first
+                ("next_attempt_at", 1),   # Oldest due first
+            ]).limit(MICRO_BATCH_SIZE)
+
+            items = await cursor.to_list(length=MICRO_BATCH_SIZE)
+
+            if not items:
+                return  # Nothing due — silent return
+
+            logger.info(f"[Worker] Picked up {len(items)} due items")
+
+            processed = 0
+            for item in items:
+                # ── Manual State Interrupt Check ──
+                # Check if the parent campaign has been paused or cancelled
+                campaign_id = item.get("campaign_id")
+                if campaign_id:
+                    campaign = await self.db.campaigns.find_one(
+                        {"_id": campaign_id},
+                        {"_id": 0, "status": 1},
+                    )
+                    if campaign:
+                        c_status = campaign.get("status", "")
+                        if c_status == "paused":
+                            logger.info(
+                                f"[Worker] Campaign {campaign_id} is paused — "
+                                f"skipping item {item.get('id')}"
+                            )
+                            continue
+                        if c_status in ("cancelled", "stopped"):
+                            # Mark remaining items as cancelled
+                            await self._cancel_item(item)
+                            continue
+
+                # ── Process the item ──
+                await self._process_item(item)
+                processed += 1
+
+                # ── Structural Throttle (inter-message jitter) ──
+                jitter = random.uniform(INTER_MSG_JITTER_MIN, INTER_MSG_JITTER_MAX)
+                await asyncio.sleep(jitter)
+
+            if processed > 0:
+                logger.info(f"[Worker] Cycle complete: {processed} items processed")
+
+                # ── Batch Cooldown ──
+                # Check if there are more due items; if so, apply cooldown
+                more_due = await self.db.msg_queues.count_documents({
+                    "status": {"$in": ["pending", "retry_wait"]},
+                    "next_attempt_at": {"$lte": datetime.now(timezone.utc)},
+                })
+                if more_due > 0:
+                    cooldown = random.uniform(BATCH_COOLDOWN_MIN, BATCH_COOLDOWN_MAX)
+                    logger.info(f"[Worker] Batch cooldown: {cooldown:.1f}s before next cycle")
+                    await asyncio.sleep(cooldown)
+
+        except Exception as e:
+            logger.error(f"[Worker] Poll cycle error: {e}", exc_info=True)
+        finally:
+            self._processing = False
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Process a single queue item
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def _process_item(self, item: Dict[str, Any]):
+        """
+        Process a single msg_queues item through the state machine:
+        pending → processing → (call provider) → delivered | retry_wait | failed_final
+        """
+        item_id = item.get("id")
+        message_id = item.get("message_id")
+        phone = item.get("phone_number", "")
+        user_id = item.get("user_id", "")
+        now = datetime.now(timezone.utc)
+
+        # ── Step 1: Atomic Concurrency Lock ──
+        # Set status to "processing" to prevent duplicate pickup
+        lock_result = await self.db.msg_queues.update_one(
+            {"id": item_id, "status": {"$in": ["pending", "retry_wait"]}},
+            {"$set": {
+                "status": "processing",
+                "updated_at": now.isoformat(),
+            }},
+        )
+        if lock_result.modified_count == 0:
+            return  # Another worker already grabbed it
+
+        # Also mark the mirror messages record
+        if message_id:
+            await self.db.messages.update_one(
+                {"id": message_id},
+                {"$set": {"status": "processing"}},
+            )
+
+        # ── Step 2: Get message content ──
+        # Content is either on the queue item or in messages collection
+        content = item.get("message_content", "")
+        if not content and message_id:
+            msg_doc = await self.db.messages.find_one(
+                {"id": message_id}, {"_id": 0, "message_content": 1}
+            )
+            content = msg_doc.get("message_content", "") if msg_doc else ""
+
+        # ── Step 3: Call Provider Adapter ──
+        try:
+            result = await ProviderAdapter.send_message(phone, content)
+        except Exception as e:
+            result = {"success": False, "provider_sid": None, "error": str(e)}
+
+        # ── Step 4: Handle result ──
+        if result.get("success"):
+            await self._handle_success(item, result, now)
+        else:
+            await self._handle_failure(item, result, now)
+
+        # ── Step 5: Update batch & campaign stats ──
+        await self._update_batch_stats(item.get("batch_id"), user_id)
+        campaign_id = item.get("campaign_id")
+        if campaign_id:
+            await self._update_campaign_stats(campaign_id)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Success handler
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def _handle_success(self, item: Dict, result: Dict, now: datetime):
+        """Mark item as delivered in both msg_queues and messages."""
+        item_id = item.get("id")
+        message_id = item.get("message_id")
+        provider_sid = result.get("provider_sid", "")
+
+        # Update msg_queues → delivered
+        await self.db.msg_queues.update_one(
+            {"id": item_id},
+            {"$set": {
+                "status": "delivered",
+                "provider_sid": provider_sid,
+                "delivered_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+            }},
+        )
+
+        # Mirror to messages collection
+        if message_id:
+            await self.db.messages.update_one(
+                {"id": message_id},
+                {"$set": {
+                    "status": "delivered",
+                    "provider_sid": provider_sid,
+                    "sent_at": now.isoformat(),
+                    "processed_at": now,
+                }},
+            )
+
+        logger.info(f"[Worker] ✓ Delivered {item.get('phone_number')} (sid={provider_sid})")
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Failure handler with exponential retry backoff
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def _handle_failure(self, item: Dict, result: Dict, now: datetime):
+        """
+        Handle delivery failure with retry logic:
+        - retry_count < MAX → status=retry_wait, next_attempt_at += 2 min
+        - retry_count >= MAX → status=failed_final, written to DLQ
+        """
+        item_id = item.get("id")
+        message_id = item.get("message_id")
+        current_retry = item.get("retry_count", 0)
+        new_retry = current_retry + 1
+        error_msg = result.get("error", "Unknown error")
+
+        # Build error log entry
+        error_entry = {
+            "timestamp": now.isoformat(),
+            "error": error_msg,
+            "attempt": new_retry,
+        }
+        error_log = item.get("error_log", [])
+        if not isinstance(error_log, list):
+            error_log = []
+        error_log.append(error_entry)
+
+        if new_retry >= MAX_RETRY_COUNT:
+            # ── FAILED_FINAL: exhausted all retries ──
+            await self.db.msg_queues.update_one(
+                {"id": item_id},
+                {"$set": {
+                    "status": "failed_final",
+                    "retry_count": new_retry,
+                    "error_log": error_log,
+                    "failed_at": now.isoformat(),
+                    "updated_at": now.isoformat(),
+                }},
+            )
+
+            # Mirror to messages
+            if message_id:
+                await self.db.messages.update_one(
+                    {"id": message_id},
+                    {"$set": {
+                        "status": "failed_final",
+                        "retry_count": new_retry,
+                        "error_log": error_log,
+                        "error": error_msg,
+                        "processed_at": now,
+                    }},
+                )
+
+            logger.warning(
+                f"[Worker] ✗ FAILED_FINAL {item.get('phone_number')} "
+                f"after {new_retry} attempts: {error_msg}"
+            )
+        else:
+            # ── RETRY_WAIT: push 2 minutes into the future ──
+            next_attempt = now + timedelta(seconds=RETRY_BACKOFF_SECONDS)
+
+            await self.db.msg_queues.update_one(
+                {"id": item_id},
+                {"$set": {
+                    "status": "retry_wait",
+                    "retry_count": new_retry,
+                    "error_log": error_log,
+                    "next_attempt_at": next_attempt,
+                    "updated_at": now.isoformat(),
+                }},
+            )
+
+            # Mirror to messages
+            if message_id:
+                await self.db.messages.update_one(
+                    {"id": message_id},
+                    {"$set": {
+                        "status": "retry_wait",
+                        "retry_count": new_retry,
+                        "error_log": error_log,
+                        "error": error_msg,
+                    }},
+                )
+
+            logger.warning(
+                f"[Worker] ⟳ RETRY_WAIT {item.get('phone_number')} "
+                f"(attempt {new_retry}/{MAX_RETRY_COUNT}, next at {next_attempt.isoformat()})"
+            )
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Cancel handler
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def _cancel_item(self, item: Dict):
+        """Mark an item as cancelled (campaign was stopped/cancelled)."""
+        await self.db.msg_queues.update_one(
+            {"id": item.get("id")},
+            {"$set": {
+                "status": "cancelled",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+        if item.get("message_id"):
+            await self.db.messages.update_one(
+                {"id": item["message_id"]},
+                {"$set": {"status": "cancelled"}},
+            )
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Stats updaters
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def _update_batch_stats(self, batch_id: str, user_id: str):
+        """Recompute batch counters from msg_queues."""
+        if not batch_id:
+            return
+
+        pipeline = [
+            {"$match": {"batch_id": batch_id}},
+            {"$group": {"_id": "$status", "count": {"$sum": 1}}},
+        ]
+        cursor = self.db.msg_queues.aggregate(pipeline)
+        counts = {}
+        async for doc in cursor:
+            counts[doc["_id"]] = doc["count"]
+
+        delivered = counts.get("delivered", 0)
+        failed_final = counts.get("failed_final", 0)
+        pending = counts.get("pending", 0) + counts.get("retry_wait", 0)
+        processing = counts.get("processing", 0)
+        cancelled = counts.get("cancelled", 0)
+        total = sum(counts.values())
+
+        # Determine batch status
+        if pending == 0 and processing == 0:
+            if failed_final > 0 and delivered == 0:
+                batch_status = "failed"
+            else:
+                batch_status = "completed"
+        elif cancelled == total:
+            batch_status = "cancelled"
+        else:
+            batch_status = "sending"
+
+        update_doc = {
+            "success_count": delivered,
+            "failed_count": failed_final,
+            "pending_count": pending + processing,
+        }
+
+        if batch_status in ("completed", "failed"):
+            update_doc["status"] = batch_status
+            update_doc["completed_at"] = datetime.now(timezone.utc).isoformat()
+        elif batch_status == "cancelled":
+            update_doc["status"] = "cancelled"
+
+        await self.db.batches.update_one(
+            {"id": batch_id},
+            {"$set": update_doc},
+        )
+
+        # Sync to campaign_batches
+        try:
+            batch = await self.db.batches.find_one(
+                {"id": batch_id}, {"_id": 0, "campaign_id": 1}
+            )
+            if batch and batch.get("campaign_id"):
+                await self.db.campaign_batches.update_one(
+                    {"batch_id": batch_id, "user_id": user_id},
+                    {"$set": update_doc},
+                )
+        except Exception:
+            pass
+
+    async def _update_campaign_stats(self, campaign_id: str):
+        """Recompute campaign-level stats from all its batches."""
+        if not campaign_id:
+            return
+
+        batches = await self.db.batches.find(
+            {"campaign_id": campaign_id}, {"_id": 0}
+        ).to_list(1000)
+
+        if not batches:
+            return
+
+        completed_batches = sum(
+            1 for b in batches
+            if b.get("status") in ("completed", "failed", "cancelled")
+        )
+        total_sent = sum(b.get("success_count", 0) for b in batches)
+        total_failed = sum(b.get("failed_count", 0) for b in batches)
+        total_customers = sum(b.get("customer_count", 0) for b in batches)
+
+        # Per-segment aggregation
+        batch_ids = [b["id"] for b in batches if b.get("id")]
+        segment_stats = {}
+        if batch_ids:
+            seg_pipeline = [
+                {"$match": {"batch_id": {"$in": batch_ids}}},
+                {"$group": {
+                    "_id": "$customer_segment",
+                    "total": {"$sum": 1},
+                    "sent": {"$sum": {"$cond": [
+                        {"$in": ["$status", ["sent", "delivered"]]}, 1, 0
+                    ]}},
+                    "failed": {"$sum": {"$cond": [
+                        {"$in": ["$status", ["failed", "failed_final"]]}, 1, 0
+                    ]}},
+                }},
+            ]
+            async for doc in self.db.msg_queues.aggregate(seg_pipeline):
+                seg = doc["_id"] or "boring"
+                segment_stats[seg] = {
+                    "total": doc["total"],
+                    "sent": doc["sent"],
+                    "failed": doc["failed"],
+                    "pct": round(doc["sent"] / doc["total"] * 100, 1) if doc["total"] > 0 else 0,
+                }
+
+        # Determine campaign status
+        all_statuses = {b.get("status") for b in batches}
+        if all_statuses <= {"completed", "failed", "cancelled"}:
+            status = "completed"
+        elif "sending" in all_statuses:
+            status = "sending"
+        elif completed_batches > 0:
+            status = "sending"
+        else:
+            status = "pending"
+
+        # Don't override manual pause/cancel
+        current = await self.db.campaigns.find_one(
+            {"_id": campaign_id}, {"_id": 0, "status": 1}
+        )
+        if current and current.get("status") in ("paused", "cancelled", "stopped"):
+            status = current["status"]
+
+        await self.db.campaigns.update_one(
+            {"_id": campaign_id},
+            {"$set": {
+                "status": status,
+                "completed_batches": completed_batches,
+                "total_batches": len(batches),
+                "total_customers": total_customers,
+                "messages_sent": total_sent,
+                "messages_failed": total_failed,
+                "segment_stats": segment_stats,
+                "updated_at": datetime.now(timezone.utc),
+            }},
+        )
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Public API for route layer
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def get_queue_stats(self) -> Dict[str, Any]:
+        """Get aggregate statistics about the message queue."""
+        pipeline = [{"$group": {"_id": "$status", "count": {"$sum": 1}}}]
+        cursor = self.db.msg_queues.aggregate(pipeline)
+        stats = {}
+        async for doc in cursor:
+            stats[doc["_id"]] = doc["count"]
+
         return {
             "pending": stats.get("pending", 0),
             "processing": stats.get("processing", 0),
-            "paused": stats.get("paused", 0),
-            "total": sum(stats.values())
+            "retry_wait": stats.get("retry_wait", 0),
+            "delivered": stats.get("delivered", 0),
+            "failed_final": stats.get("failed_final", 0),
+            "cancelled": stats.get("cancelled", 0),
+            "total": sum(stats.values()),
         }

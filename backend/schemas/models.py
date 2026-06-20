@@ -27,12 +27,26 @@ class BatchStatus(str, Enum):
 
 
 class MessageStatus(str, Enum):
-    """Individual message status."""
+    """Individual message status — 8 lifecycle states."""
     PENDING = "pending"
     PROCESSING = "processing"
-    SENT = "sent"
+    SENT_TO_PROVIDER = "sent_to_provider"
+    SENT = "sent"                     # legacy compat
     DELIVERED = "delivered"
-    FAILED = "failed"
+    RETRY_WAIT = "retry_wait"
+    FAILED = "failed"                 # legacy compat
+    FAILED_FINAL = "failed_final"
+    CANCELLED = "cancelled"
+
+
+class CampaignStatus(str, Enum):
+    """Campaign-level status for scheduler coordination."""
+    PENDING = "pending"
+    SENDING = "sending"
+    PAUSED = "paused"
+    CANCELLED = "cancelled"
+    COMPLETED = "completed"
+    STOPPED = "stopped"
 
 
 class MessagePriority(int, Enum):
