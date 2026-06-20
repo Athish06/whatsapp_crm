@@ -45,7 +45,7 @@ class ShopService:
             csv_status = {}
             for purpose in ["customer_data", "product_data", "transaction_data"]:
                 latest_file = await self.db.files.find_one(
-                    {"user_id": user_id, "shop_id": shop_id, "data_purpose": purpose},
+                    {"shop_id": shop_id, "data_purpose": purpose},
                     {"_id": 0, "uploaded_at": 1, "original_file_name": 1},
                     sort=[("uploaded_at", -1)],
                 )
@@ -124,7 +124,7 @@ class ShopService:
         csv_status = {}
         for purpose in ["customer_data", "product_data", "transaction_data"]:
             latest_file = await self.db.files.find_one(
-                {"user_id": user_id, "shop_id": shop_id, "data_purpose": purpose},
+                {"shop_id": shop_id, "data_purpose": purpose},
                 {"_id": 0, "uploaded_at": 1, "original_file_name": 1},
                 sort=[("uploaded_at", -1)],
             )
@@ -134,12 +134,42 @@ class ShopService:
                 "file_name": latest_file["original_file_name"] if latest_file else None,
             }
 
-        # ── Customer segmentation from customer_insights (single source of truth) ──
-        seg_pipeline = [
+        # ── Customer segmentation (Single Source of Truth) ──
+        # Join customers with customer_insights to ensure we only count targetable customers,
+        # and include customers with no transactions as "boring".
+        customer_pipeline = [
             {"$match": {"shop_id": shop_id}},
-            {"$group": {"_id": "$segment", "count": {"$sum": 1}}},
+            {
+                "$lookup": {
+                    "from": "customer_insights",
+                    "let": {"cust_key": {"$ifNull": ["$customer_id", "$phone"]}},
+                    "pipeline": [
+                        {"$match": {"$expr": {"$eq": ["$customer_id", "$$cust_key"]}}},
+                        {"$match": {"shop_id": shop_id}}
+                    ],
+                    "as": "insight"
+                }
+            },
+            {
+                "$unwind": {
+                    "path": "$insight",
+                    "preserveNullAndEmptyArrays": True
+                }
+            },
+            {
+                "$project": {
+                    "segment": {"$ifNull": ["$insight.segment", "boring"]}
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$segment",
+                    "count": {"$sum": 1}
+                }
+            }
         ]
-        seg_cursor = self.db.customer_insights.aggregate(seg_pipeline)
+        
+        seg_cursor = self.db.customers.aggregate(customer_pipeline)
         segment_counts = {}
         async for doc in seg_cursor:
             segment_counts[doc["_id"] or "boring"] = doc["count"]
@@ -291,6 +321,16 @@ class ShopService:
                 {"batch_id": {"$in": batch_ids}, "status": {"$in": ["pending", "processing", "paused"]}}
             )
 
+        # ── Insights last calculated timestamp (Bug 3 fix) ───────────────────
+        latest_insight = await self.db.customer_insights.find_one(
+            {"shop_id": shop_id},
+            {"_id": 0, "last_calculated_at": 1},
+            sort=[("last_calculated_at", -1)],
+        )
+        insights_last_updated = (
+            latest_insight["last_calculated_at"] if latest_insight else None
+        )
+
         shop["csv_status"] = csv_status
         shop["customer_count"] = total_customers
         shop["product_count"] = await self.db.product_inventory.count_documents({"shop_id": shop_id})
@@ -301,6 +341,7 @@ class ShopService:
         shop["premium_products_by_category"] = premium_products_by_category
         shop["bulk_products_by_category"] = bulk_products_by_category
         shop["customer_category_pct"] = customer_category_pct
+        shop["insights_last_updated"] = insights_last_updated
         shop["live_stats"] = {
             "active_batches": active_batches,
             "total_campaigns": await self.db.campaigns.count_documents({"user_id": user_id, "shop_id": shop_id}),
@@ -362,7 +403,7 @@ class ShopService:
         behavior = await self.db.customer_behavior_map.delete_many({"shop_id": shop_id})
         # Delete files
         files = await self.db.files.delete_many(
-            {"user_id": user_id, "shop_id": shop_id}
+            {"shop_id": shop_id}
         )
         # Delete templates scoped to this shop
         templates = await self.db.templates.delete_many(

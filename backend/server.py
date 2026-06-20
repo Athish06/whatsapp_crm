@@ -71,11 +71,11 @@ async def startup_event():
         except Exception as migration_err:
             logger.error(f"Failed to run database migration: {migration_err}")
         
-        # Initialize and start message queue scheduler
-        from services.scheduler_service import MessageQueueScheduler
-        message_scheduler = MessageQueueScheduler(db)
+        # Initialize and start scheduler worker
+        from services.scheduler_service import SchedulerWorker
+        message_scheduler = SchedulerWorker(db)
         message_scheduler.start()
-        logger.info("Message queue scheduler started")
+        logger.info("Scheduler worker started")
         
     except Exception as e:
         logger.warning(f"Could not connect to MongoDB: {e}")
@@ -87,10 +87,10 @@ async def shutdown_event():
     """Close database connection and stop scheduler on shutdown."""
     global message_scheduler
     
-    # Stop scheduler
+    # Stop scheduler worker
     if message_scheduler:
         message_scheduler.stop()
-        logger.info("Message queue scheduler stopped")
+        logger.info("Scheduler worker stopped")
     
     # Close database connection
     await Database.close()

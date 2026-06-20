@@ -100,8 +100,8 @@ class TransactionService:
             lambda pid: product_map.get(pid, {}).get("category", "Unknown")
         )
 
-        # Delete existing transactions for this shop (full replace)
-        await self.db.transactions.delete_many({"shop_id": shop_id})
+        # Transactions are an append-only ledger — do NOT delete existing rows.
+        # Each upload adds new records. Use recalculate_all_insights() to recompute analytics.
 
         # Prepare and insert transaction documents (per spec field names)
         uploaded_at = datetime.now(timezone.utc).isoformat()
