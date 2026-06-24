@@ -97,6 +97,7 @@ class FileUploadService:
         data_purpose: str = "customer_summary",
         linked_customer_file_id: str = None,
         campaign_id: str = None,
+        period_tag: str = None,
     ) -> Dict[str, Any]:
         """
         Upload file to Backblaze B2 and store metadata in MongoDB.
@@ -134,27 +135,33 @@ class FileUploadService:
             
             logger.info(f"Uploading file: {file.filename} ({file_size} bytes) for user {user_id}")
             
-            # Check for duplicate file upload
+            # Check for duplicate file upload using content_hash
+            content_hash = hashlib.sha256(file_content).hexdigest()
+            row_count = max(0, len(file_content.splitlines()) - 1)
+            
             existing_file_filter = {
                 "user_id": user_id,
-                "original_file_name": file.filename,
-                "file_size": file_size
+                "shop_id": shop_id,
+                "data_purpose": data_purpose,
+                "content_hash": content_hash
             }
-            if shop_id:
-                existing_file_filter["shop_id"] = shop_id
             existing_file = await db.files.find_one(existing_file_filter)
             
             if existing_file:
-                logger.warning(f"Duplicate file detected: {file.filename} already uploaded by user {user_id}")
+                logger.warning(f"Duplicate file detected: {file.filename} matches hash {content_hash}")
                 return {
                     "file_id": str(existing_file["_id"]),
                     "file_name": existing_file["original_file_name"],
                     "file_url": existing_file["file_url"],
                     "file_size": existing_file["file_size"],
+                    "content_hash": existing_file.get("content_hash"),
+                    "period_tag": existing_file.get("period_tag"),
+                    "row_count": existing_file.get("row_count"),
                     "uploaded_at": existing_file["uploaded_at"],
                     "user_id": user_id,
                     "campaign_id": existing_file.get("campaign_id"),
-                    "duplicate": True  # Flag to notify frontend
+                    "duplicate": True,
+                    "can_reprocess": True
                 }
 
             # Keep all data files grouped under a campaign container.
@@ -192,6 +199,9 @@ class FileUploadService:
                 "data_purpose": data_purpose,
                 "linked_customer_file_id": linked_customer_file_id,
                 "campaign_id": resolved_campaign_id,
+                "content_hash": content_hash,
+                "period_tag": period_tag,
+                "row_count": row_count,
                 "uploaded_at": datetime.now(),
                 "b2_file_id": file_info.id_,
             }
@@ -208,8 +218,13 @@ class FileUploadService:
                 "file_url": file_url,
                 "file_size": file_size,
                 "campaign_id": resolved_campaign_id,
+                "content_hash": content_hash,
+                "period_tag": period_tag,
+                "row_count": row_count,
                 "uploaded_at": file_metadata["uploaded_at"],
-                "user_id": user_id
+                "user_id": user_id,
+                "duplicate": False,
+                "can_reprocess": True
             }
             
         except HTTPException:

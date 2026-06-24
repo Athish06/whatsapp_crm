@@ -228,30 +228,41 @@ def classify_customers_rfm(
     df['rfm_score'] = pd.to_numeric(df['rfm_score'], errors='coerce').fillna(9).astype(int)
     
     # ==== PHASE 3: 5-TIER WATERFALL DECISION TREE ====
-    def apply_waterfall_segmentation(row):
+    def apply_waterfall_segmentation(row, previous_segment=None):
         total_score = row['rfm_score']
         r_score = row['r_score']
         f_score = row['f_score']
         m_score = row['m_score']
-        b_score = row['b_score']
+        b_score = row.get('b_score', 3)
+        purchase_count = row.get('purchase_count', 0)
+        recency_days = row.get('recency_raw', 999)  # aliased to recency_raw earlier
         
-        # Rule 1: VIP Check
-        if total_score >= 12 and m_score >= 4:
+        # ── Rule 0: NEW CUSTOMER (pre-waterfall escape) ──
+        if purchase_count <= 2 and recency_days <= 30:
+            return CustomerCategory.NEW_CUSTOMER.value
+            
+        # ── Rule 1: VIP (Champions) ──
+        # Total >= 12, with frequency override for daily shoppers
+        if total_score >= 12 and (m_score >= 4 or f_score == 5):
             return CustomerCategory.VIP.value
         
-        # Rule 2: At-Risk Check (The Rescue Logic)
+        # ── Rule 2: AT-RISK (Churn Prevention) ──
+        # Classic trigger: low recency but was historically valuable
         if r_score <= 2 and (f_score + m_score) >= 5:
             return CustomerCategory.AT_RISK.value
+        # Churn velocity: was VIP/Loyal last period, R is dropping
+        if previous_segment in (CustomerCategory.VIP.value, CustomerCategory.LOYAL_FREQUENT.value) and r_score <= 3:
+            return CustomerCategory.AT_RISK.value
         
-        # Rule 3: Potential Bulk Check
+        # ── Rule 3: POTENTIAL BULK (Pantry Stockers) ──
         if 5 <= total_score <= 11 and b_score >= 4:
             return CustomerCategory.POTENTIAL_BULK.value
         
-        # Rule 4: Loyal Frequent Check
+        # ── Rule 4: LOYAL FREQUENT (Daily Habit) ──
         if 5 <= total_score <= 11 and f_score >= 3 and f_score >= m_score:
             return CustomerCategory.LOYAL_FREQUENT.value
         
-        # Rule 5: Boring (Baseline)
+        # ── Rule 5: BORING / OCCASIONAL (Baseline) ──
         return CustomerCategory.BORING.value
     
     df['category'] = df.apply(apply_waterfall_segmentation, axis=1)

@@ -62,6 +62,9 @@ multidict==6.7.0
 yarl==1.22.0
 attrs==25.4.0
 
+# Browser Automation
+playwright>=1.42.0
+
 # Other dependencies
 click==8.3.1
 numpy==2.4.0

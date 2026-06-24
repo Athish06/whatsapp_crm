@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Activity, CheckCircle, XCircle, Square, RefreshCw, Clock, Users, Zap, Crown,
   AlertTriangle, Package, User, TrendingUp, RotateCcw, Store, Pause, Play,
-  Ban, ChevronDown, ChevronUp, Shield, MessageCircle, Eye, EyeOff,
+  Ban, ChevronDown, ChevronUp, Shield, MessageCircle, Eye, EyeOff, ShoppingBag, Star
 } from 'lucide-react';
 import { batchesAPI, shopsAPI } from '../lib/api';
 import { toast } from 'sonner';
@@ -11,9 +11,10 @@ import { toast } from 'sonner';
 const SEG = {
   vip:            { label: 'VIP Champions',    color: '#F59E0B', Icon: Crown },
   at_risk:        { label: 'At-Risk',           color: '#EF4444', Icon: AlertTriangle },
-  potential_bulk: { label: 'Potential (Bulk)',  color: '#8B5CF6', Icon: Package },
-  loyal_frequent: { label: 'Loyal (Frequent)', color: '#3B82F6', Icon: Zap },
-  boring:         { label: 'Boring / New',      color: '#6B7280', Icon: User },
+  potential_bulk: { label: 'Potential (Bulk)',  color: '#8B5CF6', Icon: ShoppingBag },
+  loyal_frequent: { label: 'Loyal (Frequent)',  color: '#3B82F6', Icon: Star },
+  boring:         { label: 'Occasional',        color: '#6B7280', Icon: User },
+  new_customer:   { label: 'New Customer',      color: '#10B981', Icon: User },
 };
 
 const STATUS_COLORS = {

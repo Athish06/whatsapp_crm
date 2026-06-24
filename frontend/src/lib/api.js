@@ -29,7 +29,7 @@ export const dashboardAPI = {
 
 // API endpoints for shops
 export const shopsAPI = {
-  create: (shop_name) => api.post('/shops/create', { shop_name }),
+  create: (name, uploadCycle = 'monthly') => api.post('/shops/create', { shop_name: name, upload_cycle: uploadCycle }),
   list: () => api.get('/shops/list'),
   getDetail: (shopId) => api.get(`/shops/${shopId}`),
   deleteCampaign: (shopId) => api.delete(`/shops/${shopId}/campaign`),
@@ -129,4 +129,25 @@ export const filesAPI = {
   getFileInfo: (fileId) => api.get(`/files/file/${fileId}`),
   deleteFile: (fileId) => api.delete(`/files/file/${fileId}`),
   detectColumns: (fileId) => api.get(`/files/detect-columns/${fileId}`),
+};
+
+// API endpoints for offers (Phase 3)
+export const offersAPI = {
+  create:       (shopId, data)           => api.post(`/shops/${shopId}/offers`, data),
+  list:         (shopId, activeOnly=true, segment=null) =>
+                  api.get(`/shops/${shopId}/offers`, { params: { active_only: activeOnly, ...(segment ? { segment } : {}) } }),
+  get:          (shopId, offerId)        => api.get(`/shops/${shopId}/offers/${offerId}`),
+  update:       (shopId, offerId, data)  => api.put(`/shops/${shopId}/offers/${offerId}`, data),
+  delete:       (shopId, offerId)        => api.delete(`/shops/${shopId}/offers/${offerId}`),
+  matchPreview: (shopId)                 => api.get(`/shops/${shopId}/offers/match`),
+};
+
+// API endpoints for monitoring (Phase 5)
+export const monitoringAPI = {
+  getCampaignOverview: (shopId) => api.get(`/shops/${shopId}/monitoring/campaigns`),
+  getCampaignDetail: (shopId, campaignId) => api.get(`/shops/${shopId}/monitoring/campaigns/${campaignId}`),
+  getBatchDetail: (shopId, batchId) => api.get(`/shops/${shopId}/monitoring/batches/${batchId}`),
+  getFailedMessages: (shopId, campaignId) => api.get(`/shops/${shopId}/monitoring/failed/${campaignId}`),
+  rescheduleFailed: (shopId, campaignId, mode) => api.post(`/shops/${shopId}/monitoring/reschedule/${campaignId}`, null, { params: { mode } }),
+  getPeriodSummary: (shopId, periodTag) => api.get(`/shops/${shopId}/monitoring/periods`, { params: { period_tag: periodTag } }),
 };

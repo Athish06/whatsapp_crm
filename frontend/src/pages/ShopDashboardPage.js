@@ -94,7 +94,8 @@ const RFMChart = ({ segmentCounts }) => {
     { key: 'at_risk', label: 'At-Risk', color: '#EF4444' },
     { key: 'potential_bulk', label: 'Potential (Bulk)', color: '#8B5CF6' },
     { key: 'loyal_frequent', label: 'Loyal (Frequent)', color: '#3B82F6' },
-    { key: 'boring', label: 'Boring / New', color: '#6B7280' },
+    { key: 'boring', label: 'Occasional', color: '#6B7280' },
+    { key: 'new_customer', label: 'New Customer', color: '#10B981' },
   ];
   const total = Object.values(segmentCounts).reduce((a, b) => a + b, 0) || 1;
 
@@ -144,6 +145,9 @@ const UploadCard = ({ title, icon: Icon, color, csvStatus, dataType, shopId, onU
         required: d.required_columns,
         fileId: d.file_id,
       });
+      if (d.duplicate) {
+        toast.info(d.message || "This file was uploaded before. You can re-map and re-process it.");
+      }
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Upload failed');
     } finally {
@@ -182,7 +186,14 @@ const UploadCard = ({ title, icon: Icon, color, csvStatus, dataType, shopId, onU
 
         <h3 className="text-xl font-semibold mb-1">{title}</h3>
         {uploaded && lastUpdated ? (
-          <p className="text-xs text-[#3ECF8E] mb-4">Last updated: {new Date(lastUpdated).toLocaleString()}</p>
+          <div>
+            <p className="text-xs text-[#3ECF8E] mb-1">Last updated: {new Date(lastUpdated).toLocaleString()}</p>
+            {csvStatus.period_tag && (
+              <p className="text-xs text-[#8B5CF6] mb-4 font-semibold uppercase tracking-wider">
+                Cycle Tag: {csvStatus.period_tag}
+              </p>
+            )}
+          </div>
         ) : (
           <p className="text-xs text-muted-foreground mb-4">No data uploaded yet</p>
         )}
@@ -343,13 +354,27 @@ const ShopDashboardPage = () => {
             Global Data Container & Shop Operations
           </p>
         </div>
-        <Link
-          to={`/campaign/new/${id}`}
-          className="flex items-center px-5 py-2.5 bg-[#3ECF8E] text-black font-medium rounded-md hover:bg-[#32B37A] transition-colors"
-        >
-          <PlusCircle className="w-5 h-5 mr-2" />
-          Create New Campaign
-        </Link>
+        <div className="flex items-center gap-3">
+          <Link
+            to={`/shop/${id}/offers`}
+            className="flex items-center px-4 py-2 bg-[#1C1C1C] border border-[#2E2E2E] text-white font-medium rounded-md hover:bg-[#2A2A2A] transition-colors"
+          >
+            Offers
+          </Link>
+          <Link
+            to={`/shop/${id}/monitoring`}
+            className="flex items-center px-4 py-2 bg-[#1C1C1C] border border-[#2E2E2E] text-white font-medium rounded-md hover:bg-[#2A2A2A] transition-colors"
+          >
+            Monitoring
+          </Link>
+          <Link
+            to={`/campaign/new/${id}`}
+            className="flex items-center px-5 py-2.5 bg-[#3ECF8E] text-black font-medium rounded-md hover:bg-[#32B37A] transition-colors"
+          >
+            <PlusCircle className="w-5 h-5 mr-2" />
+            Create Campaign
+          </Link>
+        </div>
       </div>
 
       {/* Upload Cards */}

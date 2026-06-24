@@ -9,6 +9,8 @@ import ShopDashboardPage from './pages/ShopDashboardPage';
 import CampaignCreatorPage from './pages/CampaignCreatorPage';
 import BatchMonitorPage from './pages/BatchMonitorPage';
 import TemplatesPage from './pages/TemplatesPage';
+import OffersPage from './pages/OffersPage';
+import MonitoringPage from './pages/MonitoringPage';
 import Sidebar from './components/Sidebar';
 import './App.css';
 
@@ -96,6 +98,26 @@ function App() {
               <ProtectedRoute>
                 <DashboardLayout>
                   <CampaignCreatorPage />
+                </DashboardLayout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/shop/:id/offers"
+            element={
+              <ProtectedRoute>
+                <DashboardLayout>
+                  <OffersPage />
+                </DashboardLayout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/shop/:id/monitoring"
+            element={
+              <ProtectedRoute>
+                <DashboardLayout>
+                  <MonitoringPage />
                 </DashboardLayout>
               </ProtectedRoute>
             }

@@ -17,75 +17,6 @@ class BatchService:
     def __init__(self, db: Any):
         self.db = db
 
-    async def _sync_campaign_batch_from_batch(self, batch_id: str, user_id: str) -> None:
-        """Keep campaign_batches as live status tracker for each campaign batch."""
-        batch = await self.db.batches.find_one({"id": batch_id, "user_id": user_id}, {"_id": 0})
-        if not batch or not batch.get("campaign_id"):
-            return
-
-        await self.db.campaign_batches.update_one(
-            {"campaign_id": batch["campaign_id"], "batch_id": batch_id, "user_id": user_id},
-            {
-                "$set": {
-                    "campaign_name": batch.get("campaign_name"),
-                    "file_id": batch.get("file_id"),
-                    "batch_number": batch.get("batch_number"),
-                    "total_batches": batch.get("total_batches"),
-                    "status": batch.get("status"),
-                    "priority": batch.get("priority", 0),
-                    "customer_count": batch.get("customer_count", 0),
-                    "pending_count": batch.get("pending_count", 0),
-                    "success_count": batch.get("success_count", 0),
-                    "failed_count": batch.get("failed_count", 0),
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                },
-                "$setOnInsert": {
-                    "id": str(uuid.uuid4()),
-                    "campaign_id": batch["campaign_id"],
-                    "batch_id": batch_id,
-                    "user_id": user_id,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                },
-            },
-            upsert=True,
-        )
-
-    async def _enqueue_messages(self, messages: List[Dict[str, Any]], batch: Dict[str, Any]) -> None:
-        """Mirror pending messages into msg_queues with all scheduler-required fields."""
-        if not messages:
-            return
-
-        queue_docs: List[Dict[str, Any]] = []
-        now = datetime.now(timezone.utc)
-        now_iso = now.isoformat()
-        for msg in messages:
-            queue_docs.append(
-                {
-                    "id": msg["id"],
-                    "message_id": msg["id"],
-                    "user_id": msg["user_id"],
-                    "campaign_id": batch.get("campaign_id"),
-                    "batch_id": msg["batch_id"],
-                    "shop_id": batch.get("shop_id"),
-                    "customer_id": msg["customer_id"],
-                    "customer_name": msg.get("customer_name", ""),
-                    "phone_number": msg["phone_number"],
-                    "customer_segment": msg.get("customer_segment", "boring"),
-                    "message_content": msg.get("message_content", ""),
-                    "status": "pending",
-                    "priority": msg.get("priority", 4),
-                    "scheduled_at": msg.get("scheduled_at"),
-                    "next_attempt_at": now,
-                    "retry_count": 0,
-                    "error_log": [],
-                    "is_sandbox_test": False,
-                    "created_at": now_iso,
-                    "updated_at": now_iso,
-                }
-            )
-
-        await self.db.msg_queues.insert_many(queue_docs)
-
     
     @staticmethod
     def estimate_batch_split(
@@ -122,6 +53,7 @@ class BatchService:
         shop_id: str = None,
         ai_mode: bool = False,
         fixed_product: str = None,
+        segment_offer_map: Dict[str, str] = None,  # {segment: offer_id} — Phase 3
     ) -> Dict[str, Any]:
         """Create batch campaign with messages.
         
@@ -171,6 +103,13 @@ class BatchService:
             
             templates_map = {template_id: template}
         
+        # Ensure start_time is UTC-aware
+        if start_time:
+            if start_time.tzinfo is None:
+                start_time = start_time.replace(tzinfo=timezone.utc)
+        else:
+            start_time = datetime.now(timezone.utc)
+        
         # Create campaign document for tracking
         campaign_id = str(uuid.uuid4()) if campaign_name or file_id else None
         if campaign_id:
@@ -196,6 +135,7 @@ class BatchService:
         # Load behavior maps (from customer_insights) if AI mode is on
         behavior_map = {}
         insights_segment_map = {}
+        offer_match_map: Dict[str, Any] = {}  # customer_id -> best_offer_doc
         if shop_id:
             insight_cursor = self.db.customer_insights.find(
                 {"shop_id": shop_id}, {"_id": 0}
@@ -203,6 +143,15 @@ class BatchService:
             async for ins in insight_cursor:
                 behavior_map[ins["customer_id"]] = ins
                 insights_segment_map[ins["customer_id"]] = ins.get("segment", "boring")
+
+            # Phase 3: Run affinity matching if shop has active offers
+            try:
+                from services.offers_service import OffersService
+                offers_svc = OffersService(self.db)
+                offer_match_map = await offers_svc.match_offers_to_customers(shop_id, user_id)
+            except Exception as _offer_err:
+                import logging
+                logging.getLogger(__name__).warning(f"Offer matching skipped: {_offer_err}")
         
         # Split into batches
         total_batches = math.ceil(len(customers) / batch_size)
@@ -243,7 +192,6 @@ class BatchService:
                 batch_doc["mode"] = "single-template"
             
             await self.db.batches.insert_one(batch_doc)
-            await self._sync_campaign_batch_from_batch(batch_id, user_id)
             
             # Create message records
             messages = []
@@ -269,7 +217,30 @@ class BatchService:
                 
                 # Fetch behavioral insight for this customer
                 cust_insight = behavior_map.get(cust_key) or {}
-                
+
+                # Phase 3: resolve best matched offer for this customer
+                best_offer = offer_match_map.get(cust_key) or {}
+                if not best_offer:
+                    offer_title = "Great deals throughout our store"
+                    offer_discount_str = "the best wholesale prices"
+                    offer_product_str = "your next household purchase"
+                else:
+                    offer_title = best_offer.get("title", "") or "Great deals throughout our store"
+                    offer_discount_type  = best_offer.get("discount_type", "")
+                    offer_discount_value = best_offer.get("discount_value", "")
+                    if offer_discount_type == "percentage":
+                        offer_discount_str = f"{offer_discount_value}% OFF"
+                    elif offer_discount_type == "flat":
+                        offer_discount_str = f"₹{offer_discount_value} OFF"
+                    elif offer_discount_type == "bogo":
+                        offer_discount_str = "Buy 1 Get 1 Free"
+                    else:
+                        offer_discount_str = str(offer_discount_value) if offer_discount_value else "the best wholesale prices"
+                    
+                    product_ids = best_offer.get("product_ids", [])
+                    offer_product_str = ", ".join(str(p) for p in product_ids) if product_ids else "your next household purchase"
+
+
                 # Build unified data dict for placeholder substitution
                 hydration_data = {
                     **customer,
@@ -281,6 +252,10 @@ class BatchService:
                     "second_favorite_premium_product": cust_insight.get("second_favorite_premium_product", ""),
                     "recently_bought_product": cust_insight.get("recently_bought_product", ""),
                     "complementary_product": cust_insight.get("complementary_product", ""),
+                    # Phase 3 offer placeholders
+                    "offer_title":    offer_title,
+                    "offer_discount": offer_discount_str,
+                    "offer_product":  offer_product_str,
                 }
                 
                 message_content = prepare_message(customer_template["content"], hydration_data)
@@ -314,6 +289,8 @@ class BatchService:
                 message_doc = {
                     "id": str(uuid.uuid4()),
                     "batch_id": batch_id,
+                    "campaign_id": campaign_id,  # Phase 4
+                    "shop_id": shop_id,          # Phase 4
                     "customer_id": customer["id"],
                     "phone_number": customer["phone"],
                     "customer_name": customer["name"],
@@ -323,17 +300,19 @@ class BatchService:
                     "status": MessageStatus.PENDING.value,
                     "priority": message_priority,
                     "scheduled_at": start_time,
+                    "next_attempt_at": start_time, # Phase 4: scheduler poll target uses start_time
                     "retry_count": 0,
                     "error_log": [],
                     "processed_at": None,
                     "user_id": user_id,
+                    "offer_id": best_offer.get("id"),   # Phase 3: track matched offer
                     "created_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
                 messages.append(message_doc)
             
             if messages:
                 await self.db.messages.insert_many(messages)
-                await self._enqueue_messages(messages, batch_doc)
             
             # Remove MongoDB's _id field before adding to response
             batch_response = {k: v for k, v in batch_doc.items() if k != '_id'}
