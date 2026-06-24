@@ -94,7 +94,7 @@ async def get_file_schedule_summary(
             {"_id": 0, "id": 1, "status": 1, "success_count": 1, "failed_count": 1, "customer_count": 1, "created_at": 1}
         ).to_list(5000)
 
-        queue_pending = await db.msg_queues.count_documents({"user_id": user_id, "batch_id": {"$in": [b.get("id") for b in batches if b.get("id")]}, "status": "pending"}) if batches else 0
+        queue_pending = await db.messages.count_documents({"user_id": user_id, "batch_id": {"$in": [b.get("id") for b in batches if b.get("id")]}, "status": "pending"}) if batches else 0
 
         batch_ids = [b.get("id") for b in batches if b.get("id")]
         if batch_ids:
@@ -427,19 +427,10 @@ async def cancel_campaign(
             {"$set": {"status": "cancelled", "updated_at": datetime.now()}},
         )
 
-        # Cancel all pending/retry_wait queue items
-        queue_result = await db.msg_queues.update_many(
+        # Cancel all pending/retry_wait queue items in messages
+        queue_result = await db.messages.update_many(
             {"campaign_id": campaign_id, "status": {"$in": ["pending", "retry_wait"]}},
             {"$set": {"status": "cancelled", "updated_at": datetime.now().isoformat()}},
-        )
-
-        # Cancel pending messages
-        batch_ids = [b["id"] async for b in db.batches.find(
-            {"campaign_id": campaign_id}, {"_id": 0, "id": 1}
-        )]
-        msg_result = await db.messages.update_many(
-            {"batch_id": {"$in": batch_ids}, "status": {"$in": ["pending", "retry_wait"]}},
-            {"$set": {"status": "cancelled"}},
         )
 
         # Cancel pending batches
@@ -450,8 +441,7 @@ async def cancel_campaign(
 
         return {
             "message": "Campaign cancelled",
-            "queue_cancelled": queue_result.modified_count,
-            "messages_cancelled": msg_result.modified_count,
+            "messages_cancelled": queue_result.modified_count,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -473,13 +463,13 @@ async def get_campaign_live_stats(
         if not campaign:
             raise HTTPException(status_code=404, detail="Campaign not found")
 
-        # Aggregate from msg_queues for real-time accuracy
+        # Aggregate from messages for real-time accuracy
         pipeline = [
             {"$match": {"campaign_id": campaign_id}},
             {"$group": {"_id": "$status", "count": {"$sum": 1}}},
         ]
         counts = {}
-        async for doc in db.msg_queues.aggregate(pipeline):
+        async for doc in db.messages.aggregate(pipeline):
             counts[doc["_id"]] = doc["count"]
 
         total = sum(counts.values())
@@ -536,7 +526,7 @@ async def get_campaign_dlq(
         if not campaign:
             raise HTTPException(status_code=404, detail="Campaign not found")
 
-        items = await db.msg_queues.find(
+        items = await db.messages.find(
             {"campaign_id": campaign_id, "status": "failed_final"},
             {"_id": 0},
         ).sort("updated_at", -1).to_list(500)
@@ -563,23 +553,18 @@ async def requeue_item(
         user_id = current_user.get("user_id") or current_user.get("id")
         now = datetime.now()
 
-        result = await db.msg_queues.update_one(
+        result = await db.messages.update_one(
             {"id": item_id, "user_id": user_id, "status": "failed_final"},
             {"$set": {
                 "status": "pending",
                 "retry_count": 0,
                 "next_attempt_at": now,
+                "error": None,
                 "updated_at": now.isoformat(),
             }},
         )
         if result.modified_count == 0:
             raise HTTPException(status_code=404, detail="Item not found or not in failed_final")
-
-        # Also reset the messages mirror
-        await db.messages.update_one(
-            {"id": item_id},
-            {"$set": {"status": "pending", "retry_count": 0, "error": None}},
-        )
 
         return {"message": "Item re-queued successfully", "item_id": item_id}
     except HTTPException:
@@ -598,7 +583,7 @@ async def resolve_item(
     try:
         user_id = current_user.get("user_id") or current_user.get("id")
 
-        result = await db.msg_queues.update_one(
+        result = await db.messages.update_one(
             {"id": item_id, "user_id": user_id, "status": "failed_final"},
             {"$set": {
                 "status": "resolved",

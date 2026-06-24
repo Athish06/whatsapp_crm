@@ -32,6 +32,8 @@ app.add_middleware(
 # Import and include routers
 from routes import auth, customers, templates, batches, dashboard, files
 from routes import shops as shops_router
+from routes import offers as offers_router
+from routes import monitoring as monitoring_router
 
 app.include_router(auth.router, prefix="/api")
 app.include_router(customers.router, prefix="/api")
@@ -40,6 +42,8 @@ app.include_router(batches.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(files.router, prefix="/api")
 app.include_router(shops_router.router, prefix="/api")
+app.include_router(offers_router.router, prefix="/api")
+app.include_router(monitoring_router.router, prefix="/api")
 
 
 @app.get("/api/health")
@@ -63,6 +67,13 @@ async def startup_event():
         await Database.initialize_indexes()
         logger.info("Database indexes initialized")
         
+        # Run Phase 7 migrations
+        try:
+            from migrations import run_migrations
+            await run_migrations()
+        except Exception as migration_err:
+            logger.error(f"Failed to run Phase 7 migrations: {migration_err}")
+        
         # Run one-time database migration (customer_behavior_map -> customer_insights)
         try:
             from services import migrate_behavior_to_insights
@@ -76,6 +87,14 @@ async def startup_event():
         message_scheduler = SchedulerWorker(db)
         message_scheduler.start()
         logger.info("Scheduler worker started")
+        
+        # Initialize WhatsApp Web Sender (Playwright)
+        import os
+        if os.environ.get("PROVIDER_MODE", "mock").lower() == "whatsapp_web":
+            from services.whatsapp_sender import get_whatsapp_sender
+            sender = get_whatsapp_sender()
+            # Start playwright context without blocking
+            asyncio.create_task(sender.start())
         
     except Exception as e:
         logger.warning(f"Could not connect to MongoDB: {e}")
@@ -91,6 +110,16 @@ async def shutdown_event():
     if message_scheduler:
         message_scheduler.stop()
         logger.info("Scheduler worker stopped")
+        
+    # Stop WhatsApp Web Sender
+    import os
+    if os.environ.get("PROVIDER_MODE", "mock").lower() == "whatsapp_web":
+        try:
+            from services.whatsapp_sender import get_whatsapp_sender
+            sender = get_whatsapp_sender()
+            await sender.stop()
+        except Exception as e:
+            logger.error(f"Error stopping sender: {e}")
     
     # Close database connection
     await Database.close()

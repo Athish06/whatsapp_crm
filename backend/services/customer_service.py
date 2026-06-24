@@ -98,7 +98,8 @@ class CustomerService:
         file_id: str = None,
         campaign_id: str = None,
         column_mapping: Optional[Dict[str, str]] = None,
-        percentile: int = 70
+        percentile: int = 70,
+        period_tag: str = None
     ) -> Dict[str, Any]:
         """Process and upload customers from CSV/Excel file.
         
@@ -153,6 +154,7 @@ class CustomerService:
                 "last_seen": now,
                 "uploaded_at": now,
                 "source_file": filename,
+                "period_tag": period_tag,
             }
             
             # Add file reference if file was uploaded to cloud
@@ -215,32 +217,29 @@ class CustomerService:
         }
 
         if shop_id:
-            tx_count = await self.db.transactions.count_documents({"shop_id": shop_id})
-            if tx_count > 0:
-                # Transactions exist — run insights pipeline
-                from services.insights_service import recalculate_all_insights
-                insights_count = await recalculate_all_insights(self.db, shop_id)
-                logger.info(f"Recalculated {insights_count} insights after customer upload")
+            # Read classifications from customer_insights if they exist
+            seg_pipeline = [
+                {"$match": {"shop_id": shop_id}},
+                {"$group": {"_id": "$segment", "count": {"$sum": 1}}},
+            ]
+            seg_cursor = self.db.customer_insights.aggregate(seg_pipeline)
+            has_insights = False
+            async for doc in seg_cursor:
+                if not has_insights:
+                    classifications = {
+                        "vip": 0,
+                        "at_risk": 0,
+                        "potential_bulk": 0,
+                        "loyal_frequent": 0,
+                        "boring": 0,
+                    }
+                    has_insights = True
+                seg = doc["_id"] or "boring"
+                if seg in classifications:
+                    classifications[seg] = doc["count"]
+                else:
+                    classifications["boring"] += doc["count"]
 
-                # Read classifications from customer_insights
-                seg_pipeline = [
-                    {"$match": {"shop_id": shop_id}},
-                    {"$group": {"_id": "$segment", "count": {"$sum": 1}}},
-                ]
-                seg_cursor = self.db.customer_insights.aggregate(seg_pipeline)
-                classifications = {
-                    "vip": 0,
-                    "at_risk": 0,
-                    "potential_bulk": 0,
-                    "loyal_frequent": 0,
-                    "boring": 0,
-                }
-                async for doc in seg_cursor:
-                    seg = doc["_id"] or "boring"
-                    if seg in classifications:
-                        classifications[seg] = doc["count"]
-                    else:
-                        classifications["boring"] += doc["count"]
 
         # Return customers without _id
         customers_response = await self.db.customers.find(

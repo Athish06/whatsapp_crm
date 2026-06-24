@@ -22,11 +22,13 @@ router = APIRouter(prefix="/shops", tags=["shops"])
 
 class CreateShopRequest(BaseModel):
     shop_name: str
+    upload_cycle: Optional[str] = "monthly"
 
 
 class ProcessDataRequest(BaseModel):
     column_mapping: dict
     percentile: Optional[int] = 70
+    period_tag: Optional[str] = None
 
 
 # ============ Shop CRUD ============
@@ -41,7 +43,7 @@ async def create_shop(
     try:
         user_id = current_user.get("user_id") or current_user.get("id")
         service = ShopService(db)
-        shop = await service.create_shop(user_id, body.shop_name)
+        shop = await service.create_shop(user_id, body.shop_name, body.upload_cycle)
         return shop
     except Exception as e:
         if "unique_user_shop_name" in str(e):
@@ -60,6 +62,21 @@ async def list_shops(
     service = ShopService(db)
     shops = await service.list_shops(user_id)
     return {"shops": shops}
+
+@router.get("/{shop_id}/products")
+async def list_shop_products(
+    shop_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Any = Depends(Database.get_database),
+):
+    """List all products for a shop."""
+    try:
+        user_id = current_user.get("user_id") or current_user.get("id")
+        products = await db.products.find({"shop_id": shop_id, "user_id": user_id}, {"_id": 0}).to_list(1000)
+        return {"products": products}
+    except Exception as e:
+        logger.error(f"Error listing products: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/{shop_id}")
@@ -214,7 +231,36 @@ async def preview_template(
             {"shop_id": shop_id, "customer_id": cust_id_for_insight}, {"_id": 0}
         ) or {}
 
-    # Build replacement map — the 8 smart variables
+    # Match offer for preview customer
+    offer_title = "Great deals throughout our store"
+    offer_discount_str = "the best wholesale prices"
+    offer_product_str = "your next household purchase"
+
+    try:
+        from services.offers_service import OffersService
+        offers_svc = OffersService(db)
+        cust_key = chosen.get("customer_id") or chosen.get("phone", "")
+        offer_match_map = await offers_svc.match_offers_to_customers(shop_id, user_id)
+        best_offer = offer_match_map.get(cust_key) or {}
+        if best_offer:
+            offer_title = best_offer.get("title", "") or "Great deals throughout our store"
+            offer_discount_type  = best_offer.get("discount_type", "")
+            offer_discount_value = best_offer.get("discount_value", "")
+            if offer_discount_type == "percentage":
+                offer_discount_str = f"{offer_discount_value}% OFF"
+            elif offer_discount_type == "flat":
+                offer_discount_str = f"₹{offer_discount_value} OFF"
+            elif offer_discount_type == "bogo":
+                offer_discount_str = "Buy 1 Get 1 Free"
+            else:
+                offer_discount_str = str(offer_discount_value) if offer_discount_value else "the best wholesale prices"
+            
+            product_ids = best_offer.get("product_ids", [])
+            offer_product_str = ", ".join(str(p) for p in product_ids) if product_ids else "your next household purchase"
+    except Exception as _offer_err:
+        logger.warning(f"Preview offer matching skipped: {_offer_err}")
+
+    # Build replacement map — the 11 smart variables
     replacements = {
         "customer_name": chosen.get("name", ""),
         "segment": chosen_insight.get("segment", ""),
@@ -224,7 +270,11 @@ async def preview_template(
         "second_favorite_premium_product": chosen_insight.get("second_favorite_premium_product", ""),
         "recently_bought_product": chosen_insight.get("recently_bought_product", ""),
         "complementary_product": chosen_insight.get("complementary_product", ""),
+        "offer_title": offer_title,
+        "offer_discount": offer_discount_str,
+        "offer_product": offer_product_str,
     }
+
 
     # Hydrate
     hydrated = body.template_text
@@ -498,6 +548,7 @@ async def process_shop_file(
                 campaign_id=file_doc.get("campaign_id"),
                 column_mapping=body.column_mapping,
                 percentile=body.percentile,
+                period_tag=body.period_tag or file_doc.get("period_tag"),
             )
             return result
 
@@ -520,6 +571,7 @@ async def process_shop_file(
                 user_id,
                 shop_id,
                 body.column_mapping,
+                period_tag=body.period_tag or file_doc.get("period_tag"),
             )
             return result
 

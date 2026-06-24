@@ -85,19 +85,22 @@ class TwilioProvider(BaseProvider):
 
 class WhatsAppWebProvider(BaseProvider):
     """
-    Unofficial WhatsApp Web automation adapter.
-    Bypasses sandbox restrictions and sends raw custom text
-    directly via a Python web automation client.
-
-    TODO: Implement with your preferred web automation library.
+    Real WhatsApp Web automation provider.
+    Delegates to WhatsAppWebSender (pywhatkit + pyautogui).
+    PROVIDER_MODE=whatsapp_web activates this provider.
     """
 
     async def send(self, phone: str, content: str) -> Dict[str, Any]:
-        logger.info(f"[WhatsAppWebProvider] Stub — would send to {phone}")
+        from services.whatsapp_sender import get_whatsapp_sender
+        sender = get_whatsapp_sender()
+        result = await sender.send_message(phone, content)
+        # Normalise to the standard {success, provider_sid, error} contract
+        # (reschedule_at is handled by the scheduler, not the adapter)
         return {
-            "success": False,
-            "provider_sid": None,
-            "error": "WhatsAppWebProvider not yet implemented — set PROVIDER_MODE=mock",
+            "success": result["success"],
+            "provider_sid": result.get("provider_sid"),
+            "error": result.get("error"),
+            "reschedule_at": result.get("reschedule_at"),  # passed through for scheduler use
         }
 
 

@@ -81,7 +81,7 @@ async def recalculate_all_insights(db: AsyncIOMotorDatabase, shop_id: str) -> in
         return 0
 
     # ── Step 2: Load products ──────────────────────────────────────────────
-    prod_cursor = db.product_inventory.find(
+    prod_cursor = db.products.find(
         {"shop_id": shop_id},
         {"_id": 0, "product_id": 1, "product_name": 1, "category": 1,
          "price_per_unit": 1, "price": 1, "unit": 1,
@@ -118,6 +118,11 @@ async def recalculate_all_insights(db: AsyncIOMotorDatabase, shop_id: str) -> in
     # ── Step 4: Level 1 — RFM Quintile Scoring ────────────────────────────
     agg_df = _compute_rfm_scores(agg_df)
 
+    # BUG #4 & #6 FIX: Fetch old insights to get previous_segment
+    old_insights_cursor = db.customer_insights.find({"shop_id": shop_id}, {"customer_id": 1, "segment": 1})
+    old_segments = {doc["customer_id"]: doc.get("segment") async for doc in old_insights_cursor}
+    agg_df["previous_segment"] = agg_df["customer_id"].astype(str).map(old_segments)
+
     # Store average bulkiness for waterfall (kept for downstream compatibility)
     store_avg_bulkiness = agg_df["bulkiness"].mean()
 
@@ -143,6 +148,10 @@ async def recalculate_all_insights(db: AsyncIOMotorDatabase, shop_id: str) -> in
     now_iso = datetime.now(timezone.utc).isoformat()
     insight_docs: List[Dict[str, Any]] = []
 
+    from pymongo import UpdateOne
+    ops = []
+    active_ids = []
+
     for _, row in agg_df.iterrows():
         cust_id = str(row["customer_id"])
         behavior = behavior_map.get(cust_id, {})
@@ -165,6 +174,8 @@ async def recalculate_all_insights(db: AsyncIOMotorDatabase, shop_id: str) -> in
             "b_score": int(row["b_score"]),
             "rfm_score": int(row["rfm_score"]),
             "segment": row["segment"],
+            "previous_segment": row["previous_segment"],
+            "segment_changed": (row["previous_segment"] != row["segment"]) if row["previous_segment"] else False,
 
             # ── Level 2 Classifications ──
             "favorite_category": behavior.get("favorite_category"),
@@ -188,14 +199,30 @@ async def recalculate_all_insights(db: AsyncIOMotorDatabase, shop_id: str) -> in
             "updated_at": now_iso,                        # NEW per spec
         }
         insight_docs.append(doc)
-
-    # Atomic replace: delete old → insert new
-    await db.customer_insights.delete_many({"shop_id": shop_id})
-    if insight_docs:
-        await db.customer_insights.insert_many(insight_docs)
-        logger.info(
-            f"[Insights] Stored {len(insight_docs)} customer insights for shop {shop_id}"
+        active_ids.append(cust_id)
+        
+        ops.append(
+            UpdateOne(
+                {"shop_id": shop_id, "customer_id": cust_id},
+                {"$set": doc},
+                upsert=True
+            )
         )
+
+    # BUG #1 FIX: Use upsert instead of atomic replace to avoid silent data loss
+    if ops:
+        await db.customer_insights.bulk_write(ops, ordered=False)
+        
+    # Mark absent customers as dormant
+    if active_ids:
+        await db.customer_insights.update_many(
+            {"shop_id": shop_id, "customer_id": {"$nin": active_ids}},
+            {"$set": {"segment": CustomerCategory.DORMANT.value, "updated_at": now_iso}}
+        )
+
+    logger.info(
+        f"[Insights] Upserted {len(insight_docs)} active customer insights for shop {shop_id}. Absent customers marked as dormant."
+    )
 
     # NOTE: We do NOT write back to customers collection.
     # Per schema spec: customers = identity only (name, phone, city, etc.)
@@ -234,6 +261,16 @@ def _compute_rfm_scores(df: pd.DataFrame) -> pd.DataFrame:
     for col in ["r_score", "f_score", "m_score", "b_score"]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(3).astype(int)
 
+    # BUG #5 FIX: Absolute Floors
+    ABSOLUTE_FLOORS = {
+        "frequency_vip": 8,
+        "monetary_vip": 5000,
+        "recency_fresh": 14,
+    }
+    df.loc[df["frequency"] >= ABSOLUTE_FLOORS["frequency_vip"], "f_score"] = df.loc[df["frequency"] >= ABSOLUTE_FLOORS["frequency_vip"], "f_score"].clip(lower=4)
+    df.loc[df["monetary"] >= ABSOLUTE_FLOORS["monetary_vip"], "m_score"] = df.loc[df["monetary"] >= ABSOLUTE_FLOORS["monetary_vip"], "m_score"].clip(lower=4)
+    df.loc[df["recency_days"] <= ABSOLUTE_FLOORS["recency_fresh"], "r_score"] = df.loc[df["recency_days"] <= ABSOLUTE_FLOORS["recency_fresh"], "r_score"].clip(lower=4)
+
     df["rfm_score"] = df["r_score"] + df["f_score"] + df["m_score"]
     df["rfm_score"] = pd.to_numeric(df["rfm_score"], errors="coerce").fillna(9).astype(int)
 
@@ -258,9 +295,22 @@ def _waterfall_segment(row) -> str:
     f = row["f_score"]
     m = row["m_score"]
     b = row.get("b_score", 3)
+    recency_days = row.get("recency_days", 999)
+    purchase_count = row.get("purchase_count", 0)
+    previous_segment = row.get("previous_segment")
 
-    if total >= 12 and m >= 4:
+    # BUG #4 FIX: New Customer Rule
+    if purchase_count <= 2 and recency_days <= 30 and previous_segment is None:
+        return CustomerCategory.NEW_CUSTOMER.value
+
+    # BUG #6 FIX: At-Risk Churn Velocity
+    if previous_segment in (CustomerCategory.VIP.value, CustomerCategory.LOYAL_FREQUENT.value) and recency_days >= 30:
+        return CustomerCategory.AT_RISK.value
+
+    # BUG #11 FIX: VIP Frequency Override
+    if total >= 12 and (m >= 4 or f >= 4):
         return CustomerCategory.VIP.value
+        
     if r <= 2 and (f + m) >= 5:
         return CustomerCategory.AT_RISK.value
     if 5 <= total <= 11 and b >= 4:

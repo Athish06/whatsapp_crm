@@ -1,83 +1,203 @@
 """
 Pydantic schemas/models for request and response validation.
+
+Phase 1 Schema Refinement:
+  - Added: OfferCreate, OfferResponse, OfferUpdate (new offers collection)
+  - Added: upload_cycle to ShopCreate / ShopResponse
+  - Added: period_tag, content_hash, row_count to FileMetadata
+  - Added: NEW_CUSTOMER to CustomerCategory enum
+  - Added: previous_segment, segment_changed to CustomerInsightResponse
+  - Added: campaign_id, offer_id, failure_reason to MessageResponse
+  - Added: MonitoringStats response model
+  - Removed: MessageQueueCreate / MessageQueueResponse (merged into messages)
+  - Removed: CampaignBatchCreate / CampaignBatchResponse (merged into campaigns)
 """
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, date
 from enum import Enum
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Enums
+# ══════════════════════════════════════════════════════════════════════════════
+
 class CustomerCategory(str, Enum):
-    """Customer classification categories - Hybrid RFM+B Intelligence."""
-    VIP = "vip"                          # Champions (RFM >= 12)
-    AT_RISK = "at_risk"                  # Lapsing High-Potentials (R=1, Total>4)
-    POTENTIAL_BULK = "potential_bulk"    # Pantry Stockers (5-11, High Bulkiness)
-    LOYAL_FREQUENT = "loyal_frequent"    # Daily Habit Shoppers (5-11, F>=M)
-    BORING = "boring"                    # Low-engagement Baseline (RFM <= 4)
+    """
+    Customer classification categories — 6-tier Hybrid RFM+B Intelligence.
+    
+    Waterfall order (Phase 1 additions in comments):
+      Rule 0: NEW_CUSTOMER  — ≤2 purchases in last 30 days AND previous_segment is None
+      Rule 1: VIP            — rfm_score ≥ 12 AND (m_score ≥ 4 OR f_score ≥ 4)
+      Rule 2: AT_RISK        — r_score ≤ 2 + (f+m)≥5  OR  prev=VIP/Loyal AND recency_days≥30
+      Rule 3: POTENTIAL_BULK — 5≤total≤11 AND b_score≥4
+      Rule 4: LOYAL_FREQUENT — 5≤total≤11 AND f_score≥3 AND f≥m
+      Rule 5: BORING         — everything else (display as "Occasional" in frontend)
+    """
+    NEW_CUSTOMER   = "new_customer"   # NEW: first-time / second-visit prospects
+    VIP            = "vip"            # Champions
+    AT_RISK        = "at_risk"        # Lapsing High-Potentials
+    POTENTIAL_BULK = "potential_bulk" # Pantry Stockers
+    LOYAL_FREQUENT = "loyal_frequent" # Daily Habit Shoppers
+    BORING         = "boring"         # Occasional (low-engagement baseline)
+    DORMANT        = "dormant"        # NEW: had transactions but none in current window
 
 
 class BatchStatus(str, Enum):
     """Batch processing status."""
-    PENDING = "pending"
+    PENDING   = "pending"
     SCHEDULED = "scheduled"
-    SENDING = "sending"
+    SENDING   = "sending"
     COMPLETED = "completed"
-    FAILED = "failed"
-    PAUSED = "paused"
+    FAILED    = "failed"
+    PAUSED    = "paused"
 
 
 class MessageStatus(str, Enum):
-    """Individual message status — 8 lifecycle states."""
-    PENDING = "pending"
-    PROCESSING = "processing"
-    SENT_TO_PROVIDER = "sent_to_provider"
-    SENT = "sent"                     # legacy compat
-    DELIVERED = "delivered"
-    RETRY_WAIT = "retry_wait"
-    FAILED = "failed"                 # legacy compat
-    FAILED_FINAL = "failed_final"
-    CANCELLED = "cancelled"
+    """Individual message lifecycle — 8 states (msg_queues merged in)."""
+    PENDING           = "pending"
+    PROCESSING        = "processing"
+    SENT_TO_PROVIDER  = "sent_to_provider"
+    SENT              = "sent"              # legacy compat
+    DELIVERED         = "delivered"
+    RETRY_WAIT        = "retry_wait"
+    FAILED            = "failed"            # legacy compat
+    FAILED_FINAL      = "failed_final"
+    FAILED_PERMANENTLY = "failed_permanently"
+    CANCELLED         = "cancelled"
+    SKIPPED           = "skipped"           # NEW: e.g., expired offer
+
+
+class MessageFailureReason(str, Enum):
+    """Categorised failure reasons (Bug #12 resolution)."""
+    RATE_LIMIT           = "rate_limit"
+    NETWORK              = "network"
+    INVALID_NUMBER       = "invalid_number"
+    WHATSAPP_DISCONNECTED = "whatsapp_disconnected"  # NEW
+    OFFER_EXPIRED        = "offer_expired"           # NEW
+    OUTSIDE_HOURS        = "outside_working_hours"   # NEW
+    UNKNOWN              = "unknown"
 
 
 class CampaignStatus(str, Enum):
     """Campaign-level status for scheduler coordination."""
-    PENDING = "pending"
-    SENDING = "sending"
-    PAUSED = "paused"
+    PENDING   = "pending"
+    SENDING   = "sending"
+    PAUSED    = "paused"
     CANCELLED = "cancelled"
     COMPLETED = "completed"
-    STOPPED = "stopped"
+    STOPPED   = "stopped"
 
 
 class MessagePriority(int, Enum):
-    """Message priority levels - Hybrid RFM+B Intelligence."""
-    VIP = 1                # VIP Champions (Retain gold assets)
-    AT_RISK = 1            # At-Risk (Urgent - prevent churn)
-    POTENTIAL_BULK = 2     # Potential Bulk (Increase spend per visit)
-    LOYAL_FREQUENT = 3     # Loyal Frequent (Reward the habit)
-    BORING = 4             # Boring (Low priority)
+    """Message priority levels — Hybrid RFM+B Intelligence."""
+    VIP            = 1
+    AT_RISK        = 1
+    NEW_CUSTOMER   = 2  # NEW: new customers handled promptly
+    POTENTIAL_BULK = 2
+    LOYAL_FREQUENT = 3
+    BORING         = 4
+    DORMANT        = 5  # NEW: lowest priority
 
 
 class ProductType(str, Enum):
-    """Product Type for Intelligence filtering (Premium vs Bulk vs Daily)."""
+    """Product type for intelligence filtering."""
     PREMIUM = "premium"
-    BULK = "bulk"
-    DAILY = "daily"
+    BULK    = "bulk"
+    DAILY   = "daily"
 
-# ============ Shop Models (NEW) ============
+
+class DiscountType(str, Enum):
+    """Offer discount types."""
+    PERCENTAGE = "percentage"
+    FLAT       = "flat"
+    BOGO       = "bogo"  # buy-one-get-one
+
+
+class UploadCycle(str, Enum):
+    """Upload frequency for a shop (determines period_tag format)."""
+    MONTHLY = "monthly"  # period_tag = "2026-06"
+    WEEKLY  = "weekly"   # period_tag = "2026-06-W3"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Shop Models
+# ══════════════════════════════════════════════════════════════════════════════
 
 class ShopCreate(BaseModel):
     """Create shop request."""
     shop_name: str
+    upload_cycle: UploadCycle = UploadCycle.MONTHLY  # NEW: defaults to monthly
+
+
+class ShopUpdate(BaseModel):
+    """Update shop fields."""
+    shop_name: Optional[str] = None
+    upload_cycle: Optional[UploadCycle] = None
+
 
 class ShopResponse(BaseModel):
     """Shop response."""
     id: str
     user_id: str
     shop_name: str
+    upload_cycle: str = "monthly"  # NEW
     created_at: datetime
 
-# ============ Product Inventory Models (NEW) ============
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Offers Models  (NEW — Phase 1)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class OfferCreate(BaseModel):
+    """Create an offer for a shop."""
+    title: str
+    description: Optional[str] = None
+    discount_type: DiscountType
+    discount_value: float                             # e.g. 20 (for 20% or ₹20 flat)
+    product_ids: List[str] = []                      # linked products (can be empty → category-wide)
+    category: Optional[str] = None                   # optional category-wide scope
+    target_segments: List[str] = []                  # ["vip", "loyal_frequent"] etc.
+    valid_from: Optional[date] = None
+    valid_until: Optional[date] = None
+    is_active: bool = True
+
+
+class OfferUpdate(BaseModel):
+    """Update existing offer."""
+    title: Optional[str] = None
+    description: Optional[str] = None
+    discount_type: Optional[DiscountType] = None
+    discount_value: Optional[float] = None
+    product_ids: Optional[List[str]] = None
+    category: Optional[str] = None
+    target_segments: Optional[List[str]] = None
+    valid_from: Optional[date] = None
+    valid_until: Optional[date] = None
+    is_active: Optional[bool] = None
+
+
+class OfferResponse(BaseModel):
+    """Offer response document."""
+    id: str
+    shop_id: str
+    user_id: str
+    title: str
+    description: Optional[str] = None
+    discount_type: str
+    discount_value: float
+    product_ids: List[str] = []
+    category: Optional[str] = None
+    target_segments: List[str] = []
+    valid_from: Optional[str] = None
+    valid_until: Optional[str] = None
+    is_active: bool
+    created_at: str
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Product Models
+# ══════════════════════════════════════════════════════════════════════════════
 
 class ProductInventoryCreate(BaseModel):
     """Create product inventory item request."""
@@ -88,25 +208,15 @@ class ProductInventoryCreate(BaseModel):
     price: float
     product_type: ProductType
 
+
 class ProductInventoryResponse(ProductInventoryCreate):
     """Product inventory response."""
     id: str
 
-# ============ Customer Behavior Map Models (NEW) ============
 
-class CustomerBehaviorMapCreate(BaseModel):
-    """Create customer behavior map request."""
-    shop_id: str
-    customer_id: str
-    fav_items: List[str] = []
-    recent_purchases: List[str] = []
-    top_categories: List[str] = []
-
-class CustomerBehaviorMapResponse(CustomerBehaviorMapCreate):
-    """Customer behavior map response."""
-    id: str
-
-# ============ Auth Schemas ============
+# ══════════════════════════════════════════════════════════════════════════════
+# Auth Schemas
+# ══════════════════════════════════════════════════════════════════════════════
 
 class UserLogin(BaseModel):
     """User login request."""
@@ -150,7 +260,9 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
-# ============ Customer Schemas ============
+# ══════════════════════════════════════════════════════════════════════════════
+# Customer Schemas
+# ══════════════════════════════════════════════════════════════════════════════
 
 class ColumnDetectionResponse(BaseModel):
     """Response for column detection."""
@@ -169,19 +281,38 @@ class CustomerUploadResponse(BaseModel):
 
 class CustomerUploadWithMappingRequest(BaseModel):
     """Request for uploading customers with column mapping."""
-    shop_id: Optional[str] = None  # To link RFM segments to a specific shop's dataset
+    shop_id: Optional[str] = None
     column_mapping: Dict[str, str]
     percentile: Optional[int] = 70
 
 
-# ============ Template Schemas ============
+class CustomerInsightResponse(BaseModel):
+    """Embedded insight data returned alongside a customer record."""
+    customer_id: str
+    segment: str
+    previous_segment: Optional[str] = None       # NEW: segment before latest recalculation
+    segment_changed: bool = False                 # NEW: True if segment differs from previous
+    rfm_score: Optional[int] = None
+    r_score: Optional[int] = None
+    f_score: Optional[int] = None
+    m_score: Optional[int] = None
+    recency_days: Optional[int] = None
+    frequency: Optional[int] = None
+    monetary: Optional[float] = None
+    favorite_category: Optional[str] = None
+    last_calculated_at: Optional[str] = None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Template Schemas
+# ══════════════════════════════════════════════════════════════════════════════
 
 class MessageTemplateCreate(BaseModel):
     """Create message template request."""
     shop_id: Optional[str] = None
     name: str
     content: str
-    segment: Optional[str] = "all"  # "all", "both" (VIP), "bulk_buyer", "frequent_customer", "regular"
+    segment: Optional[str] = "all"
 
 
 class MessageTemplateResponse(BaseModel):
@@ -194,21 +325,25 @@ class MessageTemplateResponse(BaseModel):
     created_at: str
 
 
-# ============ Batch Schemas ============
+# ══════════════════════════════════════════════════════════════════════════════
+# Batch Schemas
+# ══════════════════════════════════════════════════════════════════════════════
 
 class BatchCreate(BaseModel):
     """Create batch campaign request."""
     shop_id: Optional[str] = None
-    campaign_name: Optional[str] = None  # Campaign name for tracking
-    file_id: Optional[str] = None  # File ID for campaign tracking
-    template_id: Optional[str] = None  # For backwards compatibility (single template)
-    segment_templates: Optional[Dict[str, str]] = None  # For segment-based templates
+    campaign_name: Optional[str] = None
+    file_id: Optional[str] = None
+    template_id: Optional[str] = None
+    segment_templates: Optional[Dict[str, str]] = None
+    segment_offers: Optional[Dict[str, str]] = None   # NEW: segment → offer_id mapping
     customer_ids: List[str]
     batch_size: int
     start_time: datetime
     priority: int = 0
-    ai_mode: bool = False  # Whether to use AI-discovered products from behavior map
-    fixed_product: Optional[str] = None  # Fixed product name for manual mode
+    ai_mode: bool = False
+    fixed_product: Optional[str] = None
+    period_tag: Optional[str] = None                  # NEW: which period this campaign covers
 
 
 class BatchUpdateRequest(BaseModel):
@@ -234,15 +369,27 @@ class BatchResponse(BaseModel):
 
 
 class MessageResponse(BaseModel):
-    """Individual message response."""
+    """Individual message response (absorbs msg_queues fields)."""
     id: str
     batch_id: str
+    campaign_id: Optional[str] = None             # NEW: direct ref (no longer only on batch)
     customer_id: str
     phone_number: str
+    customer_name: Optional[str] = None
+    customer_segment: Optional[str] = None
+    template_id: Optional[str] = None
+    offer_id: Optional[str] = None                # NEW: linked offer
     message_content: str
     status: MessageStatus
+    priority: int = 4
+    scheduled_at: Optional[str] = None
     sent_at: Optional[str] = None
-    error: Optional[str] = None
+    retry_count: int = 0
+    error_log: Optional[List[Dict[str, Any]]] = None  # NEW: structured list (was string)
+    failure_reason: Optional[str] = None          # NEW: categorised failure
+    user_id: Optional[str] = None
+    shop_id: Optional[str] = None
+    created_at: Optional[str] = None
 
 
 class BatchSplitEstimate(BaseModel):
@@ -254,7 +401,9 @@ class BatchSplitEstimate(BaseModel):
     estimated_completion_minutes: float
 
 
-# ============ Dashboard Schemas ============
+# ══════════════════════════════════════════════════════════════════════════════
+# Dashboard Schemas
+# ══════════════════════════════════════════════════════════════════════════════
 
 class DashboardStats(BaseModel):
     """Dashboard statistics response."""
@@ -265,7 +414,26 @@ class DashboardStats(BaseModel):
     templates_count: int
 
 
-# ============ File Upload Schemas ============
+class MonitoringStats(BaseModel):
+    """
+    Monitoring dashboard stats (Phase 5).
+    Returned by monitoring endpoints for a shop/campaign.
+    """
+    total: int = 0
+    sent: int = 0
+    delivered: int = 0
+    failed: int = 0
+    pending: int = 0
+    cancelled: int = 0
+    skipped: int = 0
+    retry_wait: int = 0
+    failure_reasons: Dict[str, int] = {}         # {"rate_limit": 5, "invalid_number": 2}
+    period_tag: Optional[str] = None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# File Upload Schemas  — enhanced with content_hash, period_tag, row_count
+# ══════════════════════════════════════════════════════════════════════════════
 
 class FileUploadResponse(BaseModel):
     """File upload response."""
@@ -273,67 +441,12 @@ class FileUploadResponse(BaseModel):
     file_name: str
     file_url: str
     file_size: int
+    content_hash: Optional[str] = None    # NEW: SHA-256 hex
+    period_tag: Optional[str] = None      # NEW: "2026-06" or "2026-06-W3"
+    row_count: Optional[int] = None       # NEW: number of data rows
     uploaded_at: datetime
-    duplicate: Optional[bool] = False  # Flag for duplicate file detection
-
-
-# ============ Campaign Batch Schemas (New) ============
-
-class CampaignBatchCreate(BaseModel):
-    """Create campaign batch request."""
-    shop_id: Optional[str] = None
-    campaign_name: str
-    file_id: Optional[str] = None
-    segment_templates: Dict[str, str]  # segment -> template_id mapping
-    total_customers: int
-    segment_breakdown: Dict[str, int]  # segment -> count
-
-
-class CampaignBatchResponse(BaseModel):
-    """Campaign batch response."""
-    id: str
-    user_id: str
-    campaign_name: str
-    total_customers: int
-    segment_breakdown: Dict[str, int]
-    created_at: datetime
-    status: BatchStatus
-
-
-# ============ Message Queue Schemas (New) ============
-
-class MessageQueueCreate(BaseModel):
-    """Create message in queue."""
-    batch_id: str
-    customer_id: str
-    phone: str
-    message_body: str
-    scheduled_at: datetime
-    priority: int  # 1-4 based on RFM segment
-
-
-class MessageQueueResponse(BaseModel):
-    """Message queue item response."""
-    id: str
-    user_id: str
-    batch_id: str
-    customer_id: str
-    phone: str
-    message_body: str
-    scheduled_at: datetime
-    status: MessageStatus
-    priority: int
-    retry_count: int
-    error_log: Optional[str] = None
-    processed_at: Optional[datetime] = None
-
-
-class ProcessFileRequest(BaseModel):
-    """Request to process uploaded file with column mapping."""
-    shop_id: Optional[str] = None
-    column_mapping: Dict[str, str]
-    percentile: Optional[int] = 70
-    user_id: str
+    duplicate: Optional[bool] = False
+    can_reprocess: bool = True            # NEW: Bug #7 fix — allow re-process on hash match
 
 
 class FileMetadata(BaseModel):
@@ -341,11 +454,15 @@ class FileMetadata(BaseModel):
     id: Optional[str] = Field(alias="_id", default=None)
     user_id: str
     shop_id: Optional[str] = None
+    data_purpose: Optional[str] = None
     file_name: str
     original_file_name: str
     file_url: str
     file_size: int
     file_type: str
+    content_hash: Optional[str] = None   # NEW
+    period_tag: Optional[str] = None     # NEW
+    row_count: Optional[int] = None      # NEW
     uploaded_at: datetime
     b2_file_id: Optional[str] = None
     
@@ -357,3 +474,34 @@ class UserFilesResponse(BaseModel):
     """User files list response."""
     total_files: int
     files: List[FileMetadata]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Process File Request
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ProcessFileRequest(BaseModel):
+    """Request to process uploaded file with column mapping."""
+    shop_id: Optional[str] = None
+    column_mapping: Dict[str, str]
+    percentile: Optional[int] = 70
+    user_id: str
+    period_tag: Optional[str] = None  # NEW: owner can override auto-detected period
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Customer Behavior Map Models (legacy — kept for migration compatibility)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class CustomerBehaviorMapCreate(BaseModel):
+    """Create customer behavior map request (legacy)."""
+    shop_id: str
+    customer_id: str
+    fav_items: List[str] = []
+    recent_purchases: List[str] = []
+    top_categories: List[str] = []
+
+
+class CustomerBehaviorMapResponse(CustomerBehaviorMapCreate):
+    """Customer behavior map response (legacy)."""
+    id: str

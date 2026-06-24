@@ -1,5 +1,5 @@
 import React from 'react';
-import { Crown, AlertTriangle, Package, Zap, User, Users } from 'lucide-react';
+import { Crown, AlertTriangle, Package, Zap, User, Users, ShoppingBag, Star } from 'lucide-react';
 
 const BatchDistributionPreview = ({ classifications, batchSize }) => {
   // Calculate batch distribution
@@ -8,13 +8,14 @@ const BatchDistributionPreview = ({ classifications, batchSize }) => {
       return [];
     }
 
-    // Priority order: VIP → At-Risk → Potential (Bulk) → Loyal (Frequent) → Boring
+    // Priority order: VIP → At-Risk → Potential (Bulk) → Loyal (Frequent) → Occasional → New Customer
     const segments = [
       { type: 'vip', count: classifications.vip || 0, label: 'VIP Champions', icon: Crown, color: 'text-yellow-400', description: 'Priority 1' },
-      { type: 'at_risk', count: classifications.at_risk || 0, label: 'At-Risk', icon: AlertTriangle, color: 'text-red-400', description: 'Priority 1 (Urgent)' },
-      { type: 'potential_bulk', count: classifications.potential_bulk || 0, label: 'Potential (Bulk)', icon: Package, color: 'text-purple-400', description: 'Priority 2' },
-      { type: 'loyal_frequent', count: classifications.loyal_frequent || 0, label: 'Loyal (Frequent)', icon: Zap, color: 'text-blue-400', description: 'Priority 3' },
-      { type: 'boring', count: classifications.boring || 0, label: 'Boring', icon: User, color: 'text-slate-400', description: 'Priority 4' }
+      { type: 'at_risk', count: classifications.at_risk || 0, label: 'At-Risk', icon: AlertTriangle, color: 'text-red-400', description: 'Priority 2' },
+      { type: 'potential_bulk', count: classifications.potential_bulk || 0, label: 'Potential (Bulk)', icon: ShoppingBag, color: 'text-purple-400', description: 'Priority 3' },
+      { type: 'loyal_frequent', count: classifications.loyal_frequent || 0, label: 'Loyal (Frequent)', icon: Star, color: 'text-blue-400', description: 'Priority 4' },
+      { type: 'boring', count: classifications.boring || 0, label: 'Occasional', icon: User, color: 'text-slate-400', description: 'Priority 5' },
+      { type: 'new_customer', count: classifications.new_customer || 0, label: 'New', icon: User, color: 'text-emerald-400', description: 'Priority 6' }
     ];
 
     const batches = [];

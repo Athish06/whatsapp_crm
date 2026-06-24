@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { Users, Tag, Send, Activity, Settings, ArrowLeft, MessageCircle, Calendar, Hash, Plus } from 'lucide-react';
+import { Send, MessageCircle, Calendar, Hash, Plus, ArrowLeft, Users, Settings } from 'lucide-react';
 import { toast } from 'sonner';
-import { shopsAPI, templatesAPI, customersAPI, batchesAPI } from '../lib/api';
+import { shopsAPI, templatesAPI, customersAPI, batchesAPI, offersAPI } from '../lib/api';
 
 /* WhatsApp-style Bubble */
 const WhatsAppBubble = ({ message, segment, color }) => (
@@ -38,10 +38,14 @@ const CampaignCreatorPage = () => {
   const [loading, setLoading] = useState(true);
 
   // Segment → Template mapping
-  const segmentKeys = ['vip', 'at_risk', 'potential_bulk', 'loyal_frequent', 'boring'];
+  const segmentKeys = ['vip', 'at_risk', 'potential_bulk', 'loyal_frequent', 'boring', 'new_customer'];
   const [segmentTemplates, setSegmentTemplates] = useState({
-    vip: '', at_risk: '', potential_bulk: '', loyal_frequent: '', boring: ''
+    vip: '', at_risk: '', potential_bulk: '', loyal_frequent: '', boring: '', new_customer: ''
   });
+  const [segmentOffers, setSegmentOffers] = useState({
+    vip: '', at_risk: '', potential_bulk: '', loyal_frequent: '', boring: '', new_customer: ''
+  });
+  const [offers, setOffers] = useState([]);
 
   // Scheduling
   const [scheduledTime, setScheduledTime] = useState('');
@@ -63,13 +67,15 @@ const CampaignCreatorPage = () => {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const [shopRes, templatesRes, customersRes] = await Promise.all([
+        const [shopRes, templatesRes, customersRes, offersRes] = await Promise.all([
           shopsAPI.getDetail(shopId),
           templatesAPI.list(shopId),
           customersAPI.list(shopId),
+          offersAPI.list(shopId, true)
         ]);
         setShop(shopRes.data);
         setTemplates(templatesRes.data.templates || []);
+        setOffers(offersRes.data.offers || []);
 
         const custs = customersRes.data.customers || [];
         setCustomers(custs);
@@ -95,10 +101,12 @@ const CampaignCreatorPage = () => {
   const getHydrationPreviews = () => {
     const previews = [];
     const previewSegments = [
-      { key: 'vip', label: 'VIP Champion', color: '#3ECF8E' },
+      { key: 'vip', label: 'VIP Champions', color: '#F59E0B' },
       { key: 'at_risk', label: 'At-Risk', color: '#EF4444' },
+      { key: 'potential_bulk', label: 'Potential (Bulk)', color: '#8B5CF6' },
       { key: 'loyal_frequent', label: 'Loyal (Frequent)', color: '#3B82F6' },
-      { key: 'boring', label: 'Boring / New', color: '#6B7280' },
+      { key: 'boring', label: 'Occasional', color: '#6B7280' },
+      { key: 'new_customer', label: 'New Customer', color: '#10B981' },
     ];
 
     for (const seg of previewSegments) {
@@ -125,6 +133,19 @@ const CampaignCreatorPage = () => {
         msg = msg.replace(/\{\{offer_product_1\}\}/gi, '[AI: their favorite item]');
         msg = msg.replace(/\{\{favorite_item\}\}/gi, '[AI: their favorite item]');
         msg = msg.replace(/\{\{fixed_product\}\}/gi, '[your offer]');
+      }
+
+      // Handle offer placeholders
+      const offerId = segmentOffers[seg.key];
+      const selectedOffer = offers.find(o => o.id === offerId);
+      if (selectedOffer) {
+        msg = msg.replace(/\{\{offer_title\}\}/gi, selectedOffer.title || '');
+        msg = msg.replace(/\{\{offer_discount\}\}/gi, selectedOffer.discount_value || '');
+        msg = msg.replace(/\{\{offer_product\}\}/gi, selectedOffer.product_ids?.join(', ') || 'all items');
+      } else {
+        msg = msg.replace(/\{\{offer_title\}\}/gi, '[offer title]');
+        msg = msg.replace(/\{\{offer_discount\}\}/gi, '[offer discount]');
+        msg = msg.replace(/\{\{offer_product\}\}/gi, '[offer products]');
       }
 
       previews.push({ segment: seg.label, color: seg.color, message: msg });
@@ -166,8 +187,10 @@ const CampaignCreatorPage = () => {
     setLaunching(true);
     try {
       const segTemplatesObj = {};
+      const segOffersObj = {};
       for (const [seg, tId] of mappedSegments) {
         segTemplatesObj[seg] = tId;
+        if (segmentOffers[seg]) segOffersObj[seg] = segmentOffers[seg];
       }
 
       await batchesAPI.create({
@@ -178,6 +201,7 @@ const CampaignCreatorPage = () => {
         start_time: new Date(scheduledTime).toISOString(),
         priority: 0,
         segment_templates: segTemplatesObj,
+        segment_offers: Object.keys(segOffersObj).length > 0 ? segOffersObj : null,
         ai_mode: templateStrategy === 'ai',
         fixed_product: templateStrategy === 'fixed' ? fixedProduct : null,
       });
@@ -330,9 +354,8 @@ const CampaignCreatorPage = () => {
               )}
             </div>
 
-            {/* Segment → Template Mapping */}
             <div className="space-y-3">
-              <h4 className="font-medium">Map Templates to Segments</h4>
+              <h4 className="font-medium">Map Templates & Offers to Segments</h4>
               {templates.length === 0 ? (
                 <div className="bg-[#121212] border border-[#2E2E2E] p-4 rounded-md text-sm text-muted-foreground text-center">
                   No templates found.{' '}
@@ -340,29 +363,48 @@ const CampaignCreatorPage = () => {
                 </div>
               ) : (
                 segmentKeys.map((segment) => (
-                  <div key={segment} className="flex items-center justify-between bg-[#121212] p-3 border border-[#2E2E2E] rounded-md">
-                    <div className="w-1/3">
-                      <span className="capitalize text-sm font-medium">{segment.replace('_', ' ')}</span>
-                      <span className="text-xs text-muted-foreground ml-2">({segmentCounts[segment] || 0})</span>
+                  <div key={segment} className="flex flex-col gap-2 bg-[#121212] p-3 border border-[#2E2E2E] rounded-md">
+                    <div className="flex justify-between items-center w-full">
+                      <div className="w-1/3">
+                        <span className="capitalize text-sm font-medium">{segment.replace('_', ' ')}</span>
+                        <span className="text-xs text-muted-foreground ml-2">({segmentCounts[segment] || 0})</span>
+                      </div>
+                      <div className="flex items-center gap-2 w-2/3">
+                        <select
+                          value={segmentTemplates[segment]}
+                          onChange={(e) => setSegmentTemplates({ ...segmentTemplates, [segment]: e.target.value })}
+                          className="flex-1 bg-[#1C1C1C] border border-[#2E2E2E] rounded-md px-3 py-1.5 text-sm text-white focus:outline-none focus:border-[#3ECF8E]"
+                        >
+                          <option value="">— Skip this segment —</option>
+                          {templates.map((t) => (
+                            <option key={t.id} value={t.id}>{t.name} ({t.segment || 'all'})</option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={() => handleQuickCreateTemplate(segment)}
+                          title="Create a new template for this segment"
+                          className="flex-shrink-0 flex items-center gap-1 px-2.5 py-1.5 bg-[#3ECF8E]/10 text-[#3ECF8E] border border-[#3ECF8E]/30 rounded-md hover:bg-[#3ECF8E]/20 transition-all text-xs font-semibold"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2 w-2/3">
-                      <select
-                        value={segmentTemplates[segment]}
-                        onChange={(e) => setSegmentTemplates({ ...segmentTemplates, [segment]: e.target.value })}
-                        className="flex-1 bg-[#1C1C1C] border border-[#2E2E2E] rounded-md px-3 py-1.5 text-sm text-white focus:outline-none focus:border-[#3ECF8E]"
-                      >
-                        <option value="">— Skip this segment —</option>
-                        {templates.map((t) => (
-                          <option key={t.id} value={t.id}>{t.name} ({t.segment || 'all'})</option>
-                        ))}
-                      </select>
-                      <button
-                        onClick={() => handleQuickCreateTemplate(segment)}
-                        title="Create a new template for this segment"
-                        className="flex-shrink-0 flex items-center gap-1 px-2.5 py-1.5 bg-[#3ECF8E]/10 text-[#3ECF8E] border border-[#3ECF8E]/30 rounded-md hover:bg-[#3ECF8E]/20 transition-all text-xs font-semibold"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                      </button>
+                    {/* Offer Dropdown */}
+                    <div className="flex justify-between items-center w-full">
+                      <div className="w-1/3"></div>
+                      <div className="flex items-center gap-2 w-2/3">
+                        <select
+                          value={segmentOffers[segment]}
+                          onChange={(e) => setSegmentOffers({ ...segmentOffers, [segment]: e.target.value })}
+                          className="flex-1 bg-[#1C1C1C] border border-[#2E2E2E] rounded-md px-3 py-1.5 text-sm text-muted-foreground focus:outline-none focus:border-[#F59E0B]"
+                          disabled={!segmentTemplates[segment]} // Only enable if a template is selected
+                        >
+                          <option value="">— Auto-match offer or none —</option>
+                          {offers.map((o) => (
+                            <option key={o.id} value={o.id}>{o.title} ({o.discount_value})</option>
+                          ))}
+                        </select>
+                      </div>
                     </div>
                   </div>
                 ))
@@ -388,6 +430,18 @@ const CampaignCreatorPage = () => {
             <span className="ml-3 text-xs bg-[#3ECF8E]/15 text-[#3ECF8E] px-2 py-1 rounded-full border border-[#3ECF8E]/30">WhatsApp Style</span>
           </div>
 
+          <div className="bg-[#121212] border border-[#2E2E2E] rounded-md p-4 mb-6">
+            <h4 className="font-semibold text-white mb-2">Available Variables</h4>
+            <div className="flex flex-wrap gap-2 text-xs font-mono text-[#3ECF8E]">
+              {['{{name}}', '{{category}}', '{{offer_product_1}}', '{{fixed_product}}', '{{offer_title}}', '{{offer_discount}}', '{{offer_product}}'].map((v) => (
+                <span key={v} className="px-2 py-1 bg-[#3ECF8E]/10 rounded-md border border-[#3ECF8E]/20">{v}</span>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground mt-3">
+              * The offer placeholders will be populated if you select an Offer for the segment in the next step.
+            </p>
+          </div>
+          
           <p className="text-sm text-muted-foreground mb-6">
             Below is how your messages will look for a sample customer from each segment. Placeholders are hydrated with real data.
           </p>
@@ -457,7 +511,8 @@ const CampaignCreatorPage = () => {
               at_risk: { label: 'At-Risk', color: '#EF4444', priority: 2 },
               potential_bulk: { label: 'Potential (Bulk)', color: '#8B5CF6', priority: 3 },
               loyal_frequent: { label: 'Loyal (Frequent)', color: '#3B82F6', priority: 4 },
-              boring: { label: 'Boring / New', color: '#6B7280', priority: 5 },
+              boring: { label: 'Occasional', color: '#6B7280', priority: 5 },
+              new_customer: { label: 'New Customer', color: '#10B981', priority: 6 },
             };
             const targetCustomers = customers.filter(c => {
               const seg = c.segment || c.category || 'boring';
@@ -537,7 +592,7 @@ const CampaignCreatorPage = () => {
                   <span className="mt-0.5">⚡</span>
                   <span>
                     <strong>Smart Safety Delay:</strong> {cooldown}s cooldown between each batch to avoid WhatsApp rate limits.
-                    VIPs receive messages first (Priority 1), Boring/New last (Priority 5).
+                    VIPs receive messages first (Priority 1), Occasional/New last (Priority 5 & 6).
                   </span>
                 </div>
               </div>

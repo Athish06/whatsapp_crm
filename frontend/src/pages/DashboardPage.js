@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Store, Plus, ArrowRight, Activity, Trash2 } from 'lucide-react';
+import { Store, Plus, ArrowRight, Activity } from 'lucide-react';
 import { toast } from 'sonner';
 import { shopsAPI } from '../lib/api';
 
@@ -10,6 +10,7 @@ const DashboardPage = () => {
   const [loading, setLoading] = useState(true);
   const [isCreatingShop, setIsCreatingShop] = useState(false);
   const [newShopName, setNewShopName] = useState('');
+  const [uploadCycle, setUploadCycle] = useState('monthly');
 
   const loadShops = useCallback(async () => {
     try {
@@ -33,9 +34,10 @@ const DashboardPage = () => {
       return;
     }
     try {
-      const res = await shopsAPI.create(newShopName.trim());
+      const res = await shopsAPI.create(newShopName.trim(), uploadCycle);
       toast.success(`Shop "${newShopName}" created!`);
       setNewShopName('');
+      setUploadCycle('monthly');
       setIsCreatingShop(false);
       navigate(`/shop/${res.data.id}`);
     } catch (err) {
@@ -95,7 +97,21 @@ const DashboardPage = () => {
                   autoFocus
                 />
               </div>
-              <div className="flex justify-end space-x-3">
+              <div>
+                <label className="block text-sm font-medium text-muted-foreground mb-1">
+                  Upload Cycle
+                </label>
+                <select
+                  value={uploadCycle}
+                  onChange={(e) => setUploadCycle(e.target.value)}
+                  className="w-full bg-[#121212] border border-[#2E2E2E] rounded-md px-3 py-2 text-white focus:outline-none focus:border-[#3ECF8E]"
+                >
+                  <option value="monthly">Monthly</option>
+                  <option value="weekly">Weekly</option>
+                </select>
+                <p className="text-xs text-muted-foreground mt-1">This determines how your uploads are tagged (e.g. 2026-06 or 2026-W25)</p>
+              </div>
+              <div className="flex justify-end space-x-3 mt-4">
                 <button
                   type="button"
                   onClick={() => setIsCreatingShop(false)}

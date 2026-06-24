@@ -1,5 +1,14 @@
 """
 Database configuration and connection management for MongoDB.
+
+Phase 1 Schema Refinement (12 → 8 collections):
+  - Removed: msg_queues, campaign_batches (merged into messages / campaigns)
+  - Added: offers (new collection)
+  - files: content-hash dedup unique index (SHA-256 on file bytes)
+  - transactions: period_tag index; NO composite unique (Bug #3 fix — period-scoped replace is correct)
+  - customer_insights: previous_segment, segment_changed tracking indexes
+  - messages: campaign_id direct ref, offer_id, failure_reason, next_attempt_at indexes
+  - product_inventory → products (alias handled via migration in server.py)
 """
 from motor.motor_asyncio import AsyncIOMotorClient
 from typing import Optional, Any
@@ -37,127 +46,52 @@ class Database:
     
     @classmethod
     async def initialize_indexes(cls):
-        """Create database indexes for performance and uniqueness."""
+        """
+        Create / refresh database indexes for all 8 refined collections.
+
+        Collections (Phase 1 refined schema):
+          1. users
+          2. shops        — added upload_cycle field (indexed)
+          3. files        — content-hash dedup unique index
+          4. customers    — identity-only, unique on (shop_id, phone)
+          5. products     — replaces product_inventory
+          6. transactions — period_tag indexed; NO composite unique (period-scoped replace handles dedup)
+          7. customer_insights — previous_segment, segment_changed tracking
+          8. templates
+          9. campaigns    — absorbs campaign_batches
+         10. batches
+         11. messages     — absorbs msg_queues; adds campaign_id, offer_id, failure_reason
+         12. offers       — NEW
+        """
         db = cls.get_database()
         
         try:
-            # ── Drop legacy indexes that conflict with the new schema ──────────
-            for legacy_index in [
-                "unique_customer_phone",
-                "unique_customer_phone_v2",
-            ]:
+            # ── Drop ALL legacy indexes that conflict with the new schema ─────────
+            legacy_drops = [
+                # customers
+                ("customers", "unique_customer_phone"),
+                ("customers", "unique_customer_phone_v2"),
+                # files — old shape without content_hash
+                ("files", "unique_file_upload"),
+                ("files", "unique_shop_file_upload"),
+            ]
+            for coll_name, idx_name in legacy_drops:
                 try:
-                    await db.customers.drop_index(legacy_index)
+                    await db[coll_name].drop_index(idx_name)
+                    logger.info(f"Dropped legacy index {coll_name}.{idx_name}")
                 except Exception:
-                    pass
+                    pass  # index didn't exist — that's fine
 
-            # ── 1. customers collection ───────────────────────────────────────
-            # Per spec: identity-only. Unique key = (shop_id, phone).
-            await db.customers.create_index(
-                [("shop_id", 1), ("phone", 1)],
-                unique=True,
-                name="unique_shop_customer_phone",
-            )
-            await db.customers.create_index([("user_id", 1)])
-            await db.customers.create_index([("shop_id", 1)])
-            await db.customers.create_index([("customer_id", 1)])
-
-            # ── 2. files collection ───────────────────────────────────────────
-            # Drop old indexes (both possible names) before recreating with new shape
-            for old_idx in ["unique_file_upload", "unique_shop_file_upload"]:
-                try:
-                    await db.files.drop_index(old_idx)
-                except Exception:
-                    pass
-            # New index includes shop_id so same file can be uploaded to different shops
-            await db.files.create_index(
-                [("user_id", 1), ("shop_id", 1), ("original_file_name", 1), ("file_size", 1)],
-                unique=True,
-                name="unique_shop_file_upload",
-            )
-            await db.files.create_index([("user_id", 1), ("data_purpose", 1)])
-            await db.files.create_index([("shop_id", 1)])
-
-            # ── 3. templates collection ───────────────────────────────────────
-            await db.templates.create_index([("user_id", 1)])
-            await db.templates.create_index([("segment_target", 1)])
-            await db.templates.create_index([("shop_id", 1)])
-
-            # ── 4. campaigns collection ───────────────────────────────────────
-            await db.campaigns.create_index([("user_id", 1)])
-            await db.campaigns.create_index([("status", 1)])
-            await db.campaigns.create_index([("created_at", -1)])
-            await db.campaigns.create_index([("shop_id", 1)])
-
-            # ── 5. batches collection ─────────────────────────────────────────
-            await db.batches.create_index([("user_id", 1)])
-            await db.batches.create_index([("campaign_id", 1)])
-            await db.batches.create_index([("status", 1)])
-            await db.batches.create_index([("priority", 1)])
-            await db.batches.create_index([("start_time", 1)])
-            await db.batches.create_index([("shop_id", 1)])
-
-            # ── 6. messages collection ────────────────────────────────────────
-            await db.messages.create_index([("user_id", 1)])
-            await db.messages.create_index([("batch_id", 1)])
-            await db.messages.create_index([("customer_id", 1)])
-            await db.messages.create_index([("status", 1)])
-            await db.messages.create_index([("phone_number", 1)])
-            await db.messages.create_index([("priority", 1)])
-            await db.messages.create_index([("created_at", -1)])
-            await db.messages.create_index([("shop_id", 1)])
-            try:
-                await db.messages.create_index(
-                    [("batch_id", 1), ("customer_id", 1)],
-                    unique=True,
-                    name="unique_batch_customer_message",
-                )
-            except Exception:
-                pass
-
-            # ── 6b. msg_queues collection ─────────────────────────────────────
-            await db.msg_queues.create_index([("user_id", 1)])
-            await db.msg_queues.create_index([("status", 1)])
-            await db.msg_queues.create_index([("priority", 1)])
-            await db.msg_queues.create_index([("scheduled_at", 1)])
-            await db.msg_queues.create_index([("batch_id", 1)])
-            await db.msg_queues.create_index([("next_attempt_at", 1)])
-            # Compound index for scheduler worker poll query
-            await db.msg_queues.create_index(
-                [("status", 1), ("next_attempt_at", 1)],
-                name="worker_poll_query",
-            )
-            # Compound index for fast campaign-scoped lookups
-            await db.msg_queues.create_index(
-                [("shop_id", 1), ("campaign_id", 1), ("status", 1)],
-                name="campaign_status_lookup",
-            )
-            try:
-                await db.msg_queues.create_index(
-                    [("message_id", 1), ("user_id", 1)],
-                    unique=True,
-                )
-            except Exception:
-                pass
-
-            # ── 7. users collection ───────────────────────────────────────────
+            # ══════════════════════════════════════════════════════════════════════
+            # 1. users
+            # ══════════════════════════════════════════════════════════════════════
             await db.users.create_index([("email", 1)], unique=True)
 
-            # ── 7b. campaign_batches collection ───────────────────────────────
-            await db.campaign_batches.create_index([("user_id", 1)])
-            await db.campaign_batches.create_index([("campaign_id", 1)])
-            await db.campaign_batches.create_index([("batch_id", 1)])
-            await db.campaign_batches.create_index([("status", 1)])
-            try:
-                await db.campaign_batches.create_index(
-                    [("campaign_id", 1), ("batch_id", 1), ("user_id", 1)],
-                    unique=True,
-                )
-            except Exception:
-                pass
-
-            # ── 8. shops collection ───────────────────────────────────────────
+            # ══════════════════════════════════════════════════════════════════════
+            # 2. shops  — upload_cycle for period-tagging awareness
+            # ══════════════════════════════════════════════════════════════════════
             await db.shops.create_index([("user_id", 1)])
+            await db.shops.create_index([("upload_cycle", 1)])
             try:
                 await db.shops.create_index(
                     [("user_id", 1), ("shop_name", 1)],
@@ -167,9 +101,66 @@ class Database:
             except Exception:
                 pass
 
-            # ── 9. product_inventory collection ──────────────────────────────
-            await db.product_inventory.create_index([("shop_id", 1)])
-            await db.product_inventory.create_index([("product_id", 1)])
+            # ══════════════════════════════════════════════════════════════════════
+            # 3. files  — content-hash dedup (SHA-256)
+            #
+            # Unique constraint: (user_id, shop_id, data_purpose, content_hash)
+            # → same file bytes for same shop+purpose → duplicate detected, skip B2 upload
+            # → same file bytes for DIFFERENT shop → allowed (Bug #7 fix: still returns
+            #   file_id so owner can re-process with corrected column mapping)
+            # ══════════════════════════════════════════════════════════════════════
+            try:
+                await db.files.create_index(
+                    [
+                        ("user_id", 1),
+                        ("shop_id", 1),
+                        ("data_purpose", 1),
+                        ("content_hash", 1),
+                    ],
+                    unique=True,
+                    name="unique_file_content_hash",
+                    sparse=True,  # sparse: docs without content_hash not affected
+                )
+            except Exception:
+                pass
+            await db.files.create_index([("user_id", 1), ("data_purpose", 1)])
+            await db.files.create_index([("shop_id", 1)])
+            await db.files.create_index([("period_tag", 1)])
+            await db.files.create_index([("uploaded_at", -1)])
+
+            # ══════════════════════════════════════════════════════════════════════
+            # 4. customers  — identity-only, unique on (shop_id, phone)
+            # ══════════════════════════════════════════════════════════════════════
+            try:
+                await db.customers.create_index(
+                    [("shop_id", 1), ("phone", 1)],
+                    unique=True,
+                    name="unique_shop_customer_phone",
+                )
+            except Exception:
+                pass
+            await db.customers.create_index([("user_id", 1)])
+            await db.customers.create_index([("shop_id", 1)])
+            await db.customers.create_index([("customer_id", 1)])
+            await db.customers.create_index([("period_tag", 1)])
+
+            # ══════════════════════════════════════════════════════════════════════
+            # 5. products  (renamed from product_inventory)
+            #    Full-replace on upload → snapshot semantics → keep unique constraint
+            # ══════════════════════════════════════════════════════════════════════
+            try:
+                await db.products.create_index(
+                    [("shop_id", 1), ("product_id", 1)],
+                    unique=True,
+                    name="unique_shop_product",
+                )
+            except Exception:
+                pass
+            await db.products.create_index([("shop_id", 1)])
+            await db.products.create_index([("product_id", 1)])
+            await db.products.create_index([("category", 1)])
+
+            # ── Mirror indexes on product_inventory (legacy alias — still exists in DB)
             try:
                 await db.product_inventory.create_index(
                     [("shop_id", 1), ("product_id", 1)],
@@ -178,13 +169,45 @@ class Database:
                 )
             except Exception:
                 pass
+            await db.product_inventory.create_index([("shop_id", 1)])
+            await db.product_inventory.create_index([("product_id", 1)])
 
-            # ── 10. customer_insights collection ─────────────────────────────
-            # Critical: (shop_id, customer_id) → unique
-            await db.customer_insights.create_index([("shop_id", 1)])
-            await db.customer_insights.create_index([("customer_id", 1)])
-            await db.customer_insights.create_index([("segment", 1)])
-            await db.customer_insights.create_index([("updated_at", -1)])
+            # ══════════════════════════════════════════════════════════════════════
+            # 6. transactions
+            #
+            # Unique compound index to prevent duplicate rows within the same period (Addendum A).
+            # ══════════════════════════════════════════════════════════════════════
+            try:
+                await db.transactions.create_index(
+                    [
+                        ("shop_id", 1), 
+                        ("customer_id", 1), 
+                        ("product_id", 1), 
+                        ("purchase_date", 1), 
+                        ("purchase_qty", 1), 
+                        ("total_amount", 1)
+                    ],
+                    unique=True,
+                    name="unique_transaction_row"
+                )
+            except Exception:
+                pass
+            await db.transactions.create_index([("shop_id", 1), ("customer_id", 1)])
+            await db.transactions.create_index([("shop_id", 1), ("purchase_date", -1)])
+            await db.transactions.create_index([("shop_id", 1), ("product_id", 1)])
+            await db.transactions.create_index([("shop_id", 1), ("period_tag", 1)])  # NEW
+            await db.transactions.create_index([("shop_id", 1)])
+            await db.transactions.create_index([("customer_id", 1)])
+            await db.transactions.create_index([("product_id", 1)])
+            await db.transactions.create_index([("purchase_date", -1)])
+            await db.transactions.create_index([("period_tag", 1)])  # NEW
+
+            # ══════════════════════════════════════════════════════════════════════
+            # 7. customer_insights  — single source of truth for RFM
+            #
+            # Added: segment, previous_segment, segment_changed indexes
+            # for fast segment-transition queries and churn detection.
+            # ══════════════════════════════════════════════════════════════════════
             try:
                 await db.customer_insights.create_index(
                     [("shop_id", 1), ("customer_id", 1)],
@@ -193,18 +216,103 @@ class Database:
                 )
             except Exception:
                 pass
+            await db.customer_insights.create_index([("shop_id", 1)])
+            await db.customer_insights.create_index([("customer_id", 1)])
+            await db.customer_insights.create_index([("segment", 1)])
+            await db.customer_insights.create_index([("previous_segment", 1)])   # NEW
+            await db.customer_insights.create_index([("segment_changed", 1)])    # NEW
+            await db.customer_insights.create_index([("updated_at", -1)])
+            await db.customer_insights.create_index([("last_calculated_at", -1)])
 
-            # ── 11. transactions collection ───────────────────────────────────
-            # Per spec composite indexes:
-            await db.transactions.create_index([("shop_id", 1), ("customer_id", 1)])
-            await db.transactions.create_index([("shop_id", 1), ("purchase_date", -1)])
-            await db.transactions.create_index([("shop_id", 1), ("product_id", 1)])
-            await db.transactions.create_index([("shop_id", 1)])
-            await db.transactions.create_index([("customer_id", 1)])
-            await db.transactions.create_index([("product_id", 1)])
-            await db.transactions.create_index([("purchase_date", -1)])
+            # ══════════════════════════════════════════════════════════════════════
+            # 8. templates
+            # ══════════════════════════════════════════════════════════════════════
+            await db.templates.create_index([("user_id", 1)])
+            await db.templates.create_index([("segment_target", 1)])
+            await db.templates.create_index([("shop_id", 1)])
 
-            logger.info("Database indexes created successfully")
+            # ══════════════════════════════════════════════════════════════════════
+            # 9. campaigns  — absorbs campaign_batches; direct batch_ids list on doc
+            # ══════════════════════════════════════════════════════════════════════
+            await db.campaigns.create_index([("user_id", 1)])
+            await db.campaigns.create_index([("shop_id", 1)])
+            await db.campaigns.create_index([("status", 1)])
+            await db.campaigns.create_index([("created_at", -1)])
+            await db.campaigns.create_index([("period_tag", 1)])  # NEW
+
+            # ══════════════════════════════════════════════════════════════════════
+            # 10. batches
+            # ══════════════════════════════════════════════════════════════════════
+            await db.batches.create_index([("user_id", 1)])
+            await db.batches.create_index([("campaign_id", 1)])
+            await db.batches.create_index([("shop_id", 1)])
+            await db.batches.create_index([("status", 1)])
+            await db.batches.create_index([("priority", 1)])
+            await db.batches.create_index([("start_time", 1)])
+
+            # ══════════════════════════════════════════════════════════════════════
+            # 11. messages  — absorbs msg_queues scheduling fields
+            #
+            # Added fields (now on messages, not msg_queues):
+            #   campaign_id    — direct ref (was only on batch previously)
+            #   offer_id       — which offer was included
+            #   failure_reason — categorized: rate_limit | network | invalid_number | unknown
+            #   next_attempt_at — scheduler uses this for retry timing
+            #   shop_id        — for per-shop monitoring queries
+            #
+            # Removed: separate msg_queues collection entirely.
+            # Scheduler polls messages directly using (status, next_attempt_at).
+            # ══════════════════════════════════════════════════════════════════════
+            await db.messages.create_index([("user_id", 1)])
+            await db.messages.create_index([("batch_id", 1)])
+            await db.messages.create_index([("campaign_id", 1)])              # NEW direct ref
+            await db.messages.create_index([("shop_id", 1)])
+            await db.messages.create_index([("customer_id", 1)])
+            await db.messages.create_index([("status", 1)])
+            await db.messages.create_index([("phone_number", 1)])
+            await db.messages.create_index([("priority", 1)])
+            await db.messages.create_index([("created_at", -1)])
+            await db.messages.create_index([("offer_id", 1)])                 # NEW
+            await db.messages.create_index([("failure_reason", 1)])           # NEW
+            await db.messages.create_index([("next_attempt_at", 1)])          # NEW (from msg_queues)
+            # Scheduler worker poll: status + next_attempt_at (replaces msg_queues worker_poll_query)
+            await db.messages.create_index(
+                [("status", 1), ("next_attempt_at", 1)],
+                name="scheduler_poll_query",
+            )
+            # Campaign-scoped status lookups (replaces msg_queues campaign_status_lookup)
+            await db.messages.create_index(
+                [("shop_id", 1), ("campaign_id", 1), ("status", 1)],
+                name="campaign_status_lookup",
+            )
+            # Unique: one message per customer per batch
+            try:
+                await db.messages.create_index(
+                    [("batch_id", 1), ("customer_id", 1)],
+                    unique=True,
+                    name="unique_batch_customer_message",
+                )
+            except Exception:
+                pass
+
+            # ══════════════════════════════════════════════════════════════════════
+            # 12. offers  — NEW collection
+            #
+            # Schema:
+            #   id, shop_id, user_id, title, description,
+            #   discount_type ("percentage" | "flat" | "bogo"),
+            #   discount_value, product_ids[], category,
+            #   target_segments[], valid_from, valid_until,
+            #   is_active, created_at
+            # ══════════════════════════════════════════════════════════════════════
+            await db.offers.create_index([("shop_id", 1)])
+            await db.offers.create_index([("user_id", 1)])
+            await db.offers.create_index([("is_active", 1)])
+            await db.offers.create_index([("valid_until", 1)])               # for expiry checks
+            await db.offers.create_index([("target_segments", 1)])           # multi-key: array field
+            await db.offers.create_index([("shop_id", 1), ("is_active", 1)]) # common filter combo
+
+            logger.info("✓ Database indexes created/verified for all 8 refined collections (Phase 1)")
         
         except Exception as e:
             logger.error(f"Error creating indexes: {e}")

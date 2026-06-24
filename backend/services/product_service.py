@@ -151,7 +151,8 @@ class ProductService:
             products.append(doc)
 
         if products:
-            # Upsert by (shop_id, product_id) — never wipe the existing catalog
+            from pymongo import UpdateOne
+            # Upsert by (shop_id, product_id) — products accumulate
             ops = [
                 UpdateOne(
                     {"shop_id": doc["shop_id"], "product_id": doc["product_id"]},
@@ -160,7 +161,7 @@ class ProductService:
                 )
                 for doc in products
             ]
-            await self.db.product_inventory.bulk_write(ops, ordered=False)
+            await self.db.products.bulk_write(ops, ordered=False)
             logger.info(f"Upserted {len(products)} products for shop {shop_id}")
 
         # Calculate category breakdown

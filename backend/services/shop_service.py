@@ -20,13 +20,14 @@ class ShopService:
     def __init__(self, db: AsyncIOMotorDatabase):
         self.db = db
 
-    async def create_shop(self, user_id: str, shop_name: str) -> Dict[str, Any]:
+    async def create_shop(self, user_id: str, shop_name: str, upload_cycle: str = "monthly") -> Dict[str, Any]:
         """Create a new shop for the user."""
         shop_id = str(uuid.uuid4())
         shop_doc = {
             "id": shop_id,
             "user_id": user_id,
             "shop_name": shop_name,
+            "upload_cycle": upload_cycle,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         await self.db.shops.insert_one(shop_doc)
@@ -59,7 +60,7 @@ class ShopService:
             customer_count = await self.db.customers.count_documents(
                 {"user_id": user_id, "shop_id": shop_id}
             )
-            product_count = await self.db.product_inventory.count_documents(
+            product_count = await self.db.products.count_documents(
                 {"shop_id": shop_id}
             )
             transaction_count = await self.db.transactions.count_documents(
@@ -179,7 +180,7 @@ class ShopService:
             {"$match": {"shop_id": shop_id}},
             {"$group": {"_id": "$category", "count": {"$sum": 1}}},
         ]
-        cat_cursor = self.db.product_inventory.aggregate(cat_pipeline)
+        cat_cursor = self.db.products.aggregate(cat_pipeline)
         category_breakdown = {}
         async for doc in cat_cursor:
             category_breakdown[doc["_id"]] = doc["count"]
@@ -200,7 +201,7 @@ class ShopService:
             cat = doc["_id"]["category"]
             if cat and cat not in top_products_by_category:
                 # Get product name
-                product = await self.db.product_inventory.find_one(
+                product = await self.db.products.find_one(
                     {"shop_id": shop_id, "product_id": doc["_id"]["product_id"]},
                     {"_id": 0, "product_name": 1},
                 )
@@ -220,7 +221,7 @@ class ShopService:
         )
         tx_rows = [doc async for doc in tx_cursor]
         
-        prod_cursor = self.db.product_inventory.find(
+        prod_cursor = self.db.products.find(
             {"shop_id": shop_id},
             {"_id": 0, "product_id": 1, "product_name": 1, "product_type": 1, "is_premium": 1, "is_bulk": 1}
         )
@@ -333,7 +334,7 @@ class ShopService:
 
         shop["csv_status"] = csv_status
         shop["customer_count"] = total_customers
-        shop["product_count"] = await self.db.product_inventory.count_documents({"shop_id": shop_id})
+        shop["product_count"] = await self.db.products.count_documents({"shop_id": shop_id})
         shop["transaction_count"] = await self.db.transactions.count_documents({"shop_id": shop_id})
         shop["segment_counts"] = segment_counts
         shop["category_breakdown"] = category_breakdown
@@ -385,44 +386,68 @@ class ShopService:
         }
 
     async def delete_shop(self, shop_id: str, user_id: str) -> Dict[str, Any]:
-        """Full cascading delete: wipe ALL records for the shop from MongoDB."""
-        # Delete campaign data first
-        campaign_result = await self.delete_campaign_data(shop_id, user_id)
+        """Delete all associated data for a shop."""
+        from fastapi import HTTPException
+        import asyncio
 
-        # Delete customers
-        customers = await self.db.customers.delete_many(
-            {"user_id": user_id, "shop_id": shop_id}
+        # 1. First confirm the shop exists and is owned by this user
+        shop_doc = await self.db.shops.find_one({"id": shop_id, "user_id": user_id})
+        if not shop_doc:
+            raise HTTPException(status_code=404, detail="Shop not found or access denied")
+
+        # 2. Execute synchronous background deletes across all collections using shop_id
+        results = await asyncio.gather(
+            self.db.customers.delete_many({"shop_id": shop_id}),
+            self.db.products.delete_many({"shop_id": shop_id}),
+            self.db.product_inventory.delete_many({"shop_id": shop_id}),
+            self.db.transactions.delete_many({"shop_id": shop_id}),
+            self.db.customer_insights.delete_many({"shop_id": shop_id}),
+            self.db.customer_behavior_map.delete_many({"shop_id": shop_id}),
+            self.db.offers.delete_many({"shop_id": shop_id}),
+            self.db.files.delete_many({"shop_id": shop_id}),
+            self.db.templates.delete_many({"user_id": user_id, "shop_id": shop_id}),
+            self.db.campaigns.delete_many({"user_id": user_id, "shop_id": shop_id}),
+            self.db.batches.delete_many({"user_id": user_id, "shop_id": shop_id}),
+            self.db.messages.delete_many({"user_id": user_id, "shop_id": shop_id}),
+            self.db.msg_queues.delete_many({"user_id": user_id, "shop_id": shop_id}),
+            self.db.campaign_batches.delete_many({"user_id": user_id, "shop_id": shop_id}),
+            self.db.shops.delete_one({"id": shop_id, "user_id": user_id})
         )
-        # Delete products
-        products = await self.db.product_inventory.delete_many({"shop_id": shop_id})
-        # Delete transactions
-        transactions = await self.db.transactions.delete_many({"shop_id": shop_id})
-        # Delete customer_insights (new)
-        insights = await self.db.customer_insights.delete_many({"shop_id": shop_id})
-        # Delete customer_behavior_map (legacy if exists)
-        behavior = await self.db.customer_behavior_map.delete_many({"shop_id": shop_id})
-        # Delete files
-        files = await self.db.files.delete_many(
-            {"shop_id": shop_id}
-        )
-        # Delete templates scoped to this shop
-        templates = await self.db.templates.delete_many(
-            {"user_id": user_id, "shop_id": shop_id}
-        )
-        # Delete the shop document
-        shop = await self.db.shops.delete_one(
-            {"id": shop_id, "user_id": user_id}
-        )
+
+        (
+            customers,
+            products,
+            legacy_products,
+            transactions,
+            insights,
+            behavior,
+            offers,
+            files,
+            templates,
+            campaigns,
+            batches,
+            messages,
+            queues,
+            cb,
+            shop_del
+        ) = results
 
         return {
             "message": "Shop and all associated data deleted permanently",
-            "shop_deleted": shop.deleted_count,
+            "shop_deleted": shop_del.deleted_count,
             "customers_deleted": customers.deleted_count,
-            "products_deleted": products.deleted_count,
+            "products_deleted": products.deleted_count + legacy_products.deleted_count,
             "transactions_deleted": transactions.deleted_count,
             "insights_deleted": insights.deleted_count,
             "behavior_maps_deleted": behavior.deleted_count,
+            "offers_deleted": offers.deleted_count,
             "files_deleted": files.deleted_count,
             "templates_deleted": templates.deleted_count,
-            **{k: v for k, v in campaign_result.items() if k != "message"},
+            "campaigns_deleted": campaigns.deleted_count,
+            "batches_deleted": batches.deleted_count,
+            "messages_deleted": messages.deleted_count,
+            "queues_deleted": queues.deleted_count,
+            "campaign_batches_deleted": cb.deleted_count,
         }
+
+

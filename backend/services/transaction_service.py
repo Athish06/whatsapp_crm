@@ -41,6 +41,7 @@ class TransactionService:
         user_id: str,
         shop_id: str,
         column_mapping: Dict[str, str],
+        period_tag: str = None,
     ) -> Dict[str, Any]:
         """
         Parse transaction CSV, store in transactions collection,
@@ -85,9 +86,9 @@ class TransactionService:
         df = df[df["customer_id"].str.len() > 0]
         df = df[df["product_id"].str.len() > 0]
 
-        # Look up product categories from product_inventory
+        # Look up product categories from products
         product_ids = df["product_id"].unique().tolist()
-        products_cursor = self.db.product_inventory.find(
+        products_cursor = self.db.products.find(
             {"shop_id": shop_id, "product_id": {"$in": product_ids}},
             {"_id": 0, "product_id": 1, "category": 1, "product_name": 1},
         )
@@ -100,8 +101,26 @@ class TransactionService:
             lambda pid: product_map.get(pid, {}).get("category", "Unknown")
         )
 
-        # Transactions are an append-only ledger — do NOT delete existing rows.
-        # Each upload adds new records. Use recalculate_all_insights() to recompute analytics.
+        # Auto-detect period_tag if not provided
+        if not period_tag:
+            try:
+                # Get most common month in the data
+                dominant_month = df["purchase_date"].dt.to_period("M").mode()[0]
+                period_tag = str(dominant_month)
+            except Exception as e:
+                logger.warning(f"Failed to auto-detect period_tag: {e}")
+                period_tag = datetime.now(timezone.utc).strftime("%Y-%m")
+                
+        logger.info(f"Processing transactions for shop {shop_id} with period_tag {period_tag}")
+
+        # Period-scoped replace (Addendum A / Bug 3 fix):
+        # Wipe old transactions for THIS period, then insert fresh.
+        deleted = await self.db.transactions.delete_many({
+            "shop_id": shop_id,
+            "period_tag": period_tag
+        })
+        if deleted.deleted_count > 0:
+            logger.info(f"Deleted {deleted.deleted_count} existing transactions for period {period_tag}")
 
         # Prepare and insert transaction documents (per spec field names)
         uploaded_at = datetime.now(timezone.utc).isoformat()
@@ -116,13 +135,21 @@ class TransactionService:
                 "purchase_date": row["purchase_date"],
                 "purchase_qty": int(row["quantity"]),    # renamed per spec
                 "total_amount": float(row["amount"]),    # renamed per spec
+                "period_tag": period_tag,                # NEW
                 "uploaded_at": uploaded_at,
             }
             tx_docs.append(doc)
 
         if tx_docs:
-            await self.db.transactions.insert_many(tx_docs)
-            logger.info(f"Inserted {len(tx_docs)} transactions for shop {shop_id}")
+            from pymongo.errors import BulkWriteError
+            try:
+                await self.db.transactions.insert_many(tx_docs, ordered=False)
+                logger.info(f"Inserted {len(tx_docs)} transactions for shop {shop_id}")
+            except BulkWriteError as bwe:
+                # Silently ignore duplicate row errors if unique index exists
+                n_inserted = bwe.details.get('nInserted', 0)
+                n_errors = len(bwe.details.get('writeErrors', []))
+                logger.info(f"Inserted {n_inserted} transactions for shop {shop_id}. Skipped {n_errors} duplicates.")
 
         # ── Trigger full insight recalculation (RFM + Level 2) ──────────────
         from services.insights_service import recalculate_all_insights

@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { templatesAPI } from '../lib/api';
-import { Plus, Trash2, FileText, X, Crown, AlertTriangle, Package, Zap, User, Users, Copy, Edit2, Eye, ChevronDown, ChevronUp, Sparkles, ArrowLeft } from 'lucide-react';
+import { Plus, Trash2, FileText, X, Crown, AlertTriangle, Package, Zap, User, Users, Copy, Edit2, Eye, ChevronDown, ChevronUp, Sparkles, ArrowLeft, ShoppingBag, Star } from 'lucide-react';
 import { toast } from 'sonner';
 
-/* ── 8 Smart Variables ── */
+/* ── 11 Smart Variables ── */
 const SMART_VARS = [
   { key: 'customer_name', label: 'Customer Name', example: 'Rahul Menon', color: '#3ECF8E', desc: "Customer's full name" },
   { key: 'segment', label: 'Segment', example: 'VIP', color: '#F59E0B', desc: 'RFM segment (VIP, At-Risk…)' },
@@ -14,7 +14,11 @@ const SMART_VARS = [
   { key: 'second_favorite_premium_product', label: '2nd Premium Product', example: 'Maybelline Lipstick', color: '#06B6D4', desc: 'Second highest premium product' },
   { key: 'recently_bought_product', label: 'Recently Bought', example: 'Dove Soap', color: '#10B981', desc: 'Most recent product bought' },
   { key: 'complementary_product', label: 'Complementary Product', example: 'Shampoo', color: '#F97316', desc: 'Frequently bought alongside top product' },
+  { key: 'offer_title', label: 'Offer Title', example: 'Great deals throughout our store', color: '#A855F7', desc: 'Matched offer title' },
+  { key: 'offer_discount', label: 'Offer Discount', example: 'the best wholesale prices', color: '#F43F5E', desc: 'Matched discount (e.g. 20% OFF)' },
+  { key: 'offer_product', label: 'Offer Product', example: 'your next household purchase', color: '#14B8A6', desc: 'Target product(s) for the offer' },
 ];
+
 
 /* ── Quick starter templates ── */
 const QUICK_TEMPLATES = [
@@ -40,9 +44,10 @@ const segments = [
   { value: 'all', label: 'All', icon: Users, color: '#6B7280' },
   { value: 'vip', label: 'VIP', icon: Crown, color: '#F59E0B' },
   { value: 'at_risk', label: 'At-Risk', icon: AlertTriangle, color: '#EF4444' },
-  { value: 'potential_bulk', label: 'Bulk', icon: Package, color: '#8B5CF6' },
-  { value: 'loyal_frequent', label: 'Loyal', icon: Zap, color: '#3B82F6' },
-  { value: 'boring', label: 'Boring', icon: User, color: '#6B7280' },
+  { value: 'potential_bulk', label: 'Potential (Bulk)', icon: ShoppingBag, color: '#8B5CF6' },
+  { value: 'loyal_frequent', label: 'Loyal (Frequent)', icon: Star, color: '#3B82F6' },
+  { value: 'boring', label: 'Occasional', icon: User, color: '#6B7280' },
+  { value: 'new_customer', label: 'New Customer', icon: User, color: '#10B981' },
 ];
 
 /* ── WhatsApp Bubble (renders hydrated text) ── */
@@ -280,7 +285,7 @@ const TemplateForm = ({ initial, onSave, onCancel, saving }) => {
         <div className="bg-[#1C1C1C] border border-[#2E2E2E] rounded-xl p-4">
           <div className="flex items-center gap-2 mb-3">
             <Sparkles className="w-4 h-4 text-[#3ECF8E]" />
-            <span className="text-sm font-semibold">8 Smart Variables</span>
+            <span className="text-sm font-semibold">11 Smart Variables</span>
           </div>
           <div className="space-y-1.5">
             {SMART_VARS.map(v => (
@@ -412,7 +417,7 @@ const TemplatesPage = () => {
             </button>
           )}
           <h1 className="text-4xl font-bold mb-1" style={{ fontFamily: 'Chivo, sans-serif' }}>Message Templates</h1>
-          <p className="text-muted-foreground text-sm">{templates.length} templates · 8 smart personalisation variables</p>
+          <p className="text-muted-foreground text-sm">{templates.length} templates · 11 smart personalisation variables</p>
         </div>
         {mode === 'list' && (
           <button onClick={() => { setEditing(null); setMode('create'); }}

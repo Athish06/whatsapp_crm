@@ -58,7 +58,7 @@ The WhatsApp CRM for local supermarkets needs a **complete data pipeline overhau
 |---|---------|--------|---------|
 | 1 | `users` | Keep as-is | `users` |
 | 2 | `shops` | Add `upload_cycle` field | `shops` |
-| 3 | `files` | Add `period_tag`, content hash dedup | `files` |
+| 3 | `files` | Add `period_tag`, content hash dedup | `files` |give
 | 4 | `customers` | Keep identity-only | `customers` |
 | 5 | `product_inventory` | Rename → `products` | `products` |
 | 6 | `transactions` | Add `period_tag`, dedup on composite key | `transactions` |
