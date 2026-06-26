@@ -430,7 +430,7 @@ class BatchService:
         )
         await self.db.campaigns.update_one(
             {"_id": campaign_id, "user_id": user_id},
-            {"$set": {"status": "stopped", "updated_at": datetime.now(timezone.utc)}}
+            {"$set": {"status": "stopped", "completed_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}}
         )
         return {
             "message": "Campaign stopped. Current batch will finish; future batches cancelled.",

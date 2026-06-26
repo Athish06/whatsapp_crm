@@ -99,7 +99,9 @@ async def recalculate_all_insights(db: AsyncIOMotorDatabase, shop_id: str) -> in
         products_df["price"] = 0
 
     # ── Step 3: Compute foundational metrics per customer ──────────────────
-    today = pd.Timestamp.now()
+    today = tx_df["purchase_date"].max()
+    if pd.isna(today):
+        today = pd.Timestamp.now()
 
     agg_df = tx_df.groupby("customer_id").agg(
         recency_date=("purchase_date", "max"),
@@ -123,12 +125,12 @@ async def recalculate_all_insights(db: AsyncIOMotorDatabase, shop_id: str) -> in
     old_segments = {doc["customer_id"]: doc.get("segment") async for doc in old_insights_cursor}
     agg_df["previous_segment"] = agg_df["customer_id"].astype(str).map(old_segments)
 
-    # Store average bulkiness for waterfall (kept for downstream compatibility)
+    # Store average bulkiness for waterfall
     store_avg_bulkiness = agg_df["bulkiness"].mean()
 
-    # Waterfall segmentation
+    # Waterfall segmentation — pass store_avg_bulkiness for Potential Bulk threshold
     agg_df["segment"] = agg_df.apply(
-        lambda row: _waterfall_segment(row), axis=1
+        lambda row: _waterfall_segment(row, store_avg_bulkiness), axis=1
     )
 
     # ── Step 5: Level 2 — Behavioral Profiling ────────────────────────────
@@ -238,38 +240,29 @@ async def recalculate_all_insights(db: AsyncIOMotorDatabase, shop_id: str) -> in
 # ────────────────────────────────────────────────────────────────────────────
 
 def _compute_rfm_scores(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute R, F, M quintile scores (1-5) using rank-based method."""
+    """Compute R, F, M, B quintile scores (1-5) using rank-based method."""
 
-    # ── Recency Score (lower days = better = 5) ──
+    # ── Recency Score (lower days = more recent = better = 5) ──
+    # Rank-based quintile: bottom 20% of days (most recent) → score 5
     df["recency_rank"] = df["recency_raw"].rank(method="average")
     df["r_score"] = _safe_qcut(df["recency_rank"], labels_asc=[5, 4, 3, 2, 1])
 
-    # ── Frequency Score (higher = better = 5) ──
+    # ── Frequency Score (higher visit count = better = 5) ──
     df["f_rank"] = df["frequency"].rank(method="average")
     df["f_score"] = _safe_qcut(df["f_rank"], labels_asc=[1, 2, 3, 4, 5])
 
-    # ── Monetary Score (log-damped, higher = better = 5) ──
+    # ── Monetary Score (log-damped, higher spend = better = 5) ──
     df["monetary_log"] = np.log1p(df["monetary"])
     df["m_rank"] = df["monetary_log"].rank(method="average")
     df["m_score"] = _safe_qcut(df["m_rank"], labels_asc=[1, 2, 3, 4, 5])
 
-    # ── Bulkiness Score (higher = better = 5) ──
+    # ── Bulkiness Score (higher avg basket = better = 5) ──
     df["b_rank"] = df["bulkiness"].rank(method="average")
     df["b_score"] = _safe_qcut(df["b_rank"], labels_asc=[1, 2, 3, 4, 5])
 
     # Force int
     for col in ["r_score", "f_score", "m_score", "b_score"]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(3).astype(int)
-
-    # BUG #5 FIX: Absolute Floors
-    ABSOLUTE_FLOORS = {
-        "frequency_vip": 8,
-        "monetary_vip": 5000,
-        "recency_fresh": 14,
-    }
-    df.loc[df["frequency"] >= ABSOLUTE_FLOORS["frequency_vip"], "f_score"] = df.loc[df["frequency"] >= ABSOLUTE_FLOORS["frequency_vip"], "f_score"].clip(lower=4)
-    df.loc[df["monetary"] >= ABSOLUTE_FLOORS["monetary_vip"], "m_score"] = df.loc[df["monetary"] >= ABSOLUTE_FLOORS["monetary_vip"], "m_score"].clip(lower=4)
-    df.loc[df["recency_days"] <= ABSOLUTE_FLOORS["recency_fresh"], "r_score"] = df.loc[df["recency_days"] <= ABSOLUTE_FLOORS["recency_fresh"], "r_score"].clip(lower=4)
 
     df["rfm_score"] = df["r_score"] + df["f_score"] + df["m_score"]
     df["rfm_score"] = pd.to_numeric(df["rfm_score"], errors="coerce").fillna(9).astype(int)
@@ -288,36 +281,46 @@ def _safe_qcut(series: pd.Series, labels_asc: list, q: int = 5) -> pd.Series:
             return pd.Series(3, index=series.index)
 
 
-def _waterfall_segment(row) -> str:
-    """5-tier waterfall decision tree — identical to classifier.py logic."""
-    total = row["rfm_score"]
-    r = row["r_score"]
-    f = row["f_score"]
-    m = row["m_score"]
-    b = row.get("b_score", 3)
-    recency_days = row.get("recency_days", 999)
-    purchase_count = row.get("purchase_count", 0)
-    previous_segment = row.get("previous_segment")
+def _waterfall_segment(row, store_avg_bulkiness: float = 0.0) -> str:
+    """
+    Enhanced Self-Balancing 5-Tier Waterfall.
 
-    # BUG #4 FIX: New Customer Rule
-    if purchase_count <= 2 and recency_days <= 30 and previous_segment is None:
-        return CustomerCategory.NEW_CUSTOMER.value
+    Rules (evaluated top-to-bottom; first match wins):
+      1. VIP         — total >= 12 AND (m >= 4 OR f == 5)
+      2. At-Risk     — r == 1 AND total > 4
+      3. Potential Bulk — 5 <= total <= 11 AND bulkiness > store_avg_bulkiness
+      4. Loyal Frequent — total >= 5 AND f >= 3 AND f >= m
+      5. Boring      — catch-all
+    """
+    total = int(row["rfm_score"])
+    r = int(row["r_score"])
+    f = int(row["f_score"])
+    m = int(row["m_score"])
+    bulk = float(row.get("bulkiness", 0.0))
 
-    # BUG #6 FIX: At-Risk Churn Velocity
-    if previous_segment in (CustomerCategory.VIP.value, CustomerCategory.LOYAL_FREQUENT.value) and recency_days >= 30:
-        return CustomerCategory.AT_RISK.value
-
-    # BUG #11 FIX: VIP Frequency Override
-    if total >= 12 and (m >= 4 or f >= 4):
+    # ── Rule 1: VIP Champions (Frequency Override) ──
+    # Catches highest spenders AND highly frequent daily shoppers
+    if total >= 12 and (m >= 4 or f == 5):
         return CustomerCategory.VIP.value
-        
-    if r <= 2 and (f + m) >= 5:
+
+    # ── Rule 2: At-Risk Churn (tightened to bottom-20% recency only) ──
+    # r == 1 means coldest 20% of the dataset — historically valuable but gone cold
+    elif r == 1 and total > 4:
         return CustomerCategory.AT_RISK.value
-    if 5 <= total <= 11 and b >= 4:
+
+    # ── Rule 3: Potential Bulk Pantry Stockers ──
+    # Moderate engagement BUT buys significantly more items per basket than store average
+    elif 5 <= total <= 11 and bulk > store_avg_bulkiness:
         return CustomerCategory.POTENTIAL_BULK.value
-    if 5 <= total <= 11 and f >= 3 and f >= m:
+
+    # ── Rule 4: Loyal Frequent Daily Habit (floor lowered to total >= 5) ──
+    # Rescues regular foot-traffic from falling into Boring bucket
+    elif total >= 5 and f >= 3 and f >= m:
         return CustomerCategory.LOYAL_FREQUENT.value
-    return CustomerCategory.BORING.value
+
+    # ── Rule 5: Boring Baseline Catch-All ──
+    else:
+        return CustomerCategory.BORING.value
 
 
 async def migrate_behavior_to_insights(db: AsyncIOMotorDatabase) -> Dict[str, Any]:

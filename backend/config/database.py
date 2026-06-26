@@ -160,17 +160,7 @@ class Database:
             await db.products.create_index([("product_id", 1)])
             await db.products.create_index([("category", 1)])
 
-            # ── Mirror indexes on product_inventory (legacy alias — still exists in DB)
-            try:
-                await db.product_inventory.create_index(
-                    [("shop_id", 1), ("product_id", 1)],
-                    unique=True,
-                    name="unique_shop_product",
-                )
-            except Exception:
-                pass
-            await db.product_inventory.create_index([("shop_id", 1)])
-            await db.product_inventory.create_index([("product_id", 1)])
+            # Removed legacy product_inventory index creation
 
             # ══════════════════════════════════════════════════════════════════════
             # 6. transactions

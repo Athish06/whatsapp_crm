@@ -17,6 +17,7 @@ class MonitoringService:
         cursor = self.db.campaigns.find(
             {"shop_id": shop_id, "user_id": user_id},
             {"_id": 1, "campaign_name": 1, "status": 1, "created_at": 1, 
+             "completed_at": 1, "updated_at": 1,
              "total_batches": 1, "completed_batches": 1,
              "total_customers": 1, "messages_sent": 1, "messages_failed": 1,
              "segment_stats": 1, "period_tag": 1}
@@ -25,6 +26,21 @@ class MonitoringService:
         campaigns = await cursor.to_list(100)
         for c in campaigns:
             c["id"] = str(c.pop("_id"))
+            if isinstance(c.get("created_at"), datetime):
+                dt = c["created_at"]
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                c["created_at"] = dt.isoformat()
+            if isinstance(c.get("completed_at"), datetime):
+                dt = c["completed_at"]
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                c["completed_at"] = dt.isoformat()
+            if isinstance(c.get("updated_at"), datetime):
+                dt = c["updated_at"]
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                c["updated_at"] = dt.isoformat()
         return campaigns
 
     async def get_campaign_detail(self, campaign_id: str, user_id: str) -> Dict[str, Any]:
@@ -37,6 +53,21 @@ class MonitoringService:
         if not campaign:
             return None
         campaign["id"] = str(campaign.pop("_id"))
+        if isinstance(campaign.get("created_at"), datetime):
+            dt = campaign["created_at"]
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            campaign["created_at"] = dt.isoformat()
+        if isinstance(campaign.get("completed_at"), datetime):
+            dt = campaign["completed_at"]
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            campaign["completed_at"] = dt.isoformat()
+        if isinstance(campaign.get("updated_at"), datetime):
+            dt = campaign["updated_at"]
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            campaign["updated_at"] = dt.isoformat()
 
         # Get batches
         batches = await self.db.batches.find(

@@ -256,7 +256,19 @@ async def preview_template(
                 offer_discount_str = str(offer_discount_value) if offer_discount_value else "the best wholesale prices"
             
             product_ids = best_offer.get("product_ids", [])
-            offer_product_str = ", ".join(str(p) for p in product_ids) if product_ids else "your next household purchase"
+            if product_ids:
+                # Look up product names from inventory instead of showing raw IDs
+                prod_docs = await db.products.find(
+                    {"shop_id": shop_id, "product_id": {"$in": [str(pid) for pid in product_ids]}},
+                    {"_id": 0, "product_name": 1, "product_id": 1}
+                ).to_list(length=50)
+                name_map = {doc["product_id"]: doc.get("product_name", "") for doc in prod_docs}
+                product_names = [name_map.get(str(pid), str(pid)) for pid in product_ids]
+                offer_product_str = ", ".join(n for n in product_names if n)
+                if not offer_product_str:
+                    offer_product_str = "your next household purchase"
+            else:
+                offer_product_str = "your next household purchase"
     except Exception as _offer_err:
         logger.warning(f"Preview offer matching skipped: {_offer_err}")
 

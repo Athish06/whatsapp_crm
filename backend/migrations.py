@@ -17,11 +17,18 @@ async def run_migrations():
     logger.info("Migrating: product_inventory -> products")
     collections = await db.list_collection_names()
     if "product_inventory" in collections:
-        try:
-            await db.product_inventory.rename("products", dropTarget=True)
-            logger.info("✓ Renamed product_inventory to products")
-        except Exception as e:
-            logger.error(f"Failed to rename product_inventory: {e}")
+        if "products" not in collections:
+            try:
+                await db.product_inventory.rename("products")
+                logger.info("✓ Renamed product_inventory to products")
+            except Exception as e:
+                logger.error(f"Failed to rename product_inventory: {e}")
+        else:
+            try:
+                await db.drop_collection("product_inventory")
+                logger.info("✓ Dropped legacy product_inventory collection")
+            except Exception as e:
+                logger.error(f"Failed to drop legacy product_inventory: {e}")
     else:
         logger.info("- product_inventory collection not found (already migrated?)")
 

@@ -14,7 +14,7 @@ const SEG = {
   potential_bulk: { label: 'Potential (Bulk)',  color: '#8B5CF6', Icon: ShoppingBag },
   loyal_frequent: { label: 'Loyal (Frequent)',  color: '#3B82F6', Icon: Star },
   boring:         { label: 'Occasional',        color: '#6B7280', Icon: User },
-  new_customer:   { label: 'New Customer',      color: '#10B981', Icon: User },
+
 };
 
 const STATUS_COLORS = {
@@ -201,7 +201,6 @@ const DLQDesk = ({ campaignId, onRefresh }) => {
 const CampaignCard = ({ campaign, onRefresh }) => {
   const [stats, setStats]     = useState(null);
   const [actionLoading, setActionLoading] = useState('');
-  const [showDLQ, setShowDLQ] = useState(false);
   const intervalRef = useRef(null);
 
   const campaignId = campaign._id;
@@ -284,7 +283,12 @@ const CampaignCard = ({ campaign, onRefresh }) => {
             <h3 className="font-bold text-white truncate">{campaign.campaign_name || 'Unnamed Campaign'}</h3>
           </div>
           <p className="text-xs text-muted-foreground">
-            {new Date(campaign.created_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}
+            Started: {campaign.created_at ? new Date(campaign.created_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '—'}
+            {(s.completed_at || campaign.completed_at) ? (
+              <> · Ended: {new Date(s.completed_at || campaign.completed_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</>
+            ) : (['completed', 'stopped', 'cancelled'].includes(status) && (campaign.completed_at || campaign.updated_at)) ? (
+              <> · Ended: {new Date(campaign.completed_at || campaign.updated_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</>
+            ) : null}
           </p>
         </div>
         <div className="flex items-center gap-2 ml-3 flex-shrink-0">
@@ -378,43 +382,28 @@ const CampaignCard = ({ campaign, onRefresh }) => {
         </div>
       )}
 
-      {/* ── DLQ Toggle + Resend ── */}
-      {(failedFinal > 0 || (isDone && (campaign.live_failed > 0 || campaign.messages_failed > 0))) && (
+
+      {/* ── Resend Controls (completed campaigns only) ── */}
+      {isDone && (failedFinal > 0 || campaign.live_failed > 0 || campaign.messages_failed > 0 || campaign.status === 'stopped') && (
         <div className="border-t border-[#2E2E2E] px-5 py-3">
           <div className="flex flex-wrap gap-2">
-            <button onClick={() => setShowDLQ(!showDLQ)}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-red-500/10 text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/20 transition-colors">
-              {showDLQ ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-              {showDLQ ? 'Hide' : 'Show'} DLQ ({failedFinal})
-            </button>
-            {isDone && (
-              <>
-                {(campaign.live_failed > 0 || failedFinal > 0) && (
-                  <button onClick={() => handleResend('failed')} disabled={!!actionLoading}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-red-500/10 text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/20 transition-colors disabled:opacity-50">
-                    <RotateCcw className="w-3 h-3" />Resend Failed
-                  </button>
-                )}
-                {campaign.status === 'stopped' && (
-                  <button onClick={() => handleResend('unsent')} disabled={!!actionLoading}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-yellow-500/10 text-yellow-400 border border-yellow-500/30 rounded-lg hover:bg-yellow-500/20 transition-colors disabled:opacity-50">
-                    <RotateCcw className="w-3 h-3" />Resend Unsent
-                  </button>
-                )}
-                <button onClick={() => handleResend('all')} disabled={!!actionLoading}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-[#3ECF8E]/10 text-[#3ECF8E] border border-[#3ECF8E]/30 rounded-lg hover:bg-[#3ECF8E]/20 transition-colors disabled:opacity-50">
-                  <RotateCcw className="w-3 h-3" />Resend All
-                </button>
-              </>
+            {(campaign.live_failed > 0 || failedFinal > 0) && (
+              <button onClick={() => handleResend('failed')} disabled={!!actionLoading}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-red-500/10 text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/20 transition-colors disabled:opacity-50">
+                <RotateCcw className="w-3 h-3" />Resend Failed
+              </button>
             )}
+            {campaign.status === 'stopped' && (
+              <button onClick={() => handleResend('unsent')} disabled={!!actionLoading}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-yellow-500/10 text-yellow-400 border border-yellow-500/30 rounded-lg hover:bg-yellow-500/20 transition-colors disabled:opacity-50">
+                <RotateCcw className="w-3 h-3" />Resend Unsent
+              </button>
+            )}
+            <button onClick={() => handleResend('all')} disabled={!!actionLoading}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-[#3ECF8E]/10 text-[#3ECF8E] border border-[#3ECF8E]/30 rounded-lg hover:bg-[#3ECF8E]/20 transition-colors disabled:opacity-50">
+              <RotateCcw className="w-3 h-3" />Resend All
+            </button>
           </div>
-        </div>
-      )}
-
-      {/* ── DLQ Table (expandable) ── */}
-      {showDLQ && (
-        <div className="border-t border-[#2E2E2E]">
-          <DLQDesk campaignId={campaignId} onRefresh={() => { onRefresh(); pollStats(); }} />
         </div>
       )}
     </div>

@@ -95,7 +95,7 @@ const RFMChart = ({ segmentCounts }) => {
     { key: 'potential_bulk', label: 'Potential (Bulk)', color: '#8B5CF6' },
     { key: 'loyal_frequent', label: 'Loyal (Frequent)', color: '#3B82F6' },
     { key: 'boring', label: 'Occasional', color: '#6B7280' },
-    { key: 'new_customer', label: 'New Customer', color: '#10B981' },
+
   ];
   const total = Object.values(segmentCounts).reduce((a, b) => a + b, 0) || 1;
 

@@ -38,12 +38,12 @@ const CampaignCreatorPage = () => {
   const [loading, setLoading] = useState(true);
 
   // Segment → Template mapping
-  const segmentKeys = ['vip', 'at_risk', 'potential_bulk', 'loyal_frequent', 'boring', 'new_customer'];
+  const segmentKeys = ['vip', 'at_risk', 'potential_bulk', 'loyal_frequent', 'boring'];
   const [segmentTemplates, setSegmentTemplates] = useState({
-    vip: '', at_risk: '', potential_bulk: '', loyal_frequent: '', boring: '', new_customer: ''
+    vip: '', at_risk: '', potential_bulk: '', loyal_frequent: '', boring: ''
   });
   const [segmentOffers, setSegmentOffers] = useState({
-    vip: '', at_risk: '', potential_bulk: '', loyal_frequent: '', boring: '', new_customer: ''
+    vip: '', at_risk: '', potential_bulk: '', loyal_frequent: '', boring: ''
   });
   const [offers, setOffers] = useState([]);
 
@@ -106,7 +106,7 @@ const CampaignCreatorPage = () => {
       { key: 'potential_bulk', label: 'Potential (Bulk)', color: '#8B5CF6' },
       { key: 'loyal_frequent', label: 'Loyal (Frequent)', color: '#3B82F6' },
       { key: 'boring', label: 'Occasional', color: '#6B7280' },
-      { key: 'new_customer', label: 'New Customer', color: '#10B981' },
+
     ];
 
     for (const seg of previewSegments) {
@@ -512,7 +512,7 @@ const CampaignCreatorPage = () => {
               potential_bulk: { label: 'Potential (Bulk)', color: '#8B5CF6', priority: 3 },
               loyal_frequent: { label: 'Loyal (Frequent)', color: '#3B82F6', priority: 4 },
               boring: { label: 'Occasional', color: '#6B7280', priority: 5 },
-              new_customer: { label: 'New Customer', color: '#10B981', priority: 6 },
+
             };
             const targetCustomers = customers.filter(c => {
               const seg = c.segment || c.category || 'boring';

@@ -195,7 +195,7 @@ const MonitoringPage = () => {
                   </div>
                   
                   <div className="flex justify-between text-xs text-muted-foreground mb-2">
-                    <span>{new Date(c.created_at).toLocaleDateString()}</span>
+                    <span>{c.created_at ? new Date(c.created_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '—'}</span>
                     <span>{c.messages_sent || 0} / {c.total_customers || 0} sent</span>
                   </div>
                   
@@ -225,7 +225,14 @@ const MonitoringPage = () => {
                 <div className="flex justify-between items-start mb-4">
                   <div>
                     <h2 className="text-2xl font-bold text-white mb-1">{selectedCampaign.campaign_name}</h2>
-                    <p className="text-muted-foreground">ID: {selectedCampaign.id}</p>
+                    <p className="text-xs text-muted-foreground">
+                      Started: {selectedCampaign.created_at ? new Date(selectedCampaign.created_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '—'}
+                      {(selectedCampaign.completed_at) ? (
+                        <> · Ended: {new Date(selectedCampaign.completed_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</>
+                      ) : (['completed', 'stopped', 'cancelled'].includes(selectedCampaign.status) && selectedCampaign.updated_at) ? (
+                        <> · Ended: {new Date(selectedCampaign.updated_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</>
+                      ) : null}
+                    </p>
                   </div>
                   <div className="flex gap-3">
                     <button 

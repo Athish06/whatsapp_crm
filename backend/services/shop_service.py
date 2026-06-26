@@ -399,7 +399,6 @@ class ShopService:
         results = await asyncio.gather(
             self.db.customers.delete_many({"shop_id": shop_id}),
             self.db.products.delete_many({"shop_id": shop_id}),
-            self.db.product_inventory.delete_many({"shop_id": shop_id}),
             self.db.transactions.delete_many({"shop_id": shop_id}),
             self.db.customer_insights.delete_many({"shop_id": shop_id}),
             self.db.customer_behavior_map.delete_many({"shop_id": shop_id}),
