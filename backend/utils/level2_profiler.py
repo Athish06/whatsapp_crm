@@ -38,6 +38,19 @@ BULK_UNIT_KEYWORDS = re.compile(
     r"\b(kg|kgs|ltr|litre|litres|dozen|sack)\b", re.IGNORECASE
 )
 
+# ---------------------------------------------------------------------------
+# Dynamic Top N products per segment (for offer matching engine)
+# ---------------------------------------------------------------------------
+TOP_N_BY_SEGMENT = {
+    "vip":            8,
+    "loyal_frequent": 10,
+    "at_risk":        5,
+    "potential_bulk":  5,
+    "boring":         5,
+    "dormant":        5,
+}
+DEFAULT_TOP_N = 5
+
 
 def tag_premium_products(products_df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -305,6 +318,7 @@ def build_customer_profiles(
     products_df: pd.DataFrame,
     shop_id: str,
     today: Optional[pd.Timestamp] = None,
+    segment_map: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Core Level 2 profiler. Returns list of behavior_map docs (one per customer).
@@ -455,8 +469,22 @@ def build_customer_profiles(
 
         # ---- Favorite bulk product ----
         bulk_name = _best_bulk(cust_df, product_flags)
+        # Capture bulk product ID for matching engine
+        bulk_pid = None
+        bulk_rows_for_pid = cust_df[cust_df["product_id"].map(
+            lambda p: product_flags.get(p, {}).get("is_bulk", False)
+        )]
+        if not bulk_rows_for_pid.empty:
+            bulk_pid = bulk_rows_for_pid.groupby("product_id")["quantity"].sum().idxmax()
         if bulk_name is None:
             bulk_name = _fallback_bulk_global(all_tx_df, product_flags)
+
+        # ---- Top N product IDs for offer matching engine ----
+        cust_segment = segment_map.get(str(cust_id), "boring") if segment_map else "boring"
+        n_products = TOP_N_BY_SEGMENT.get(cust_segment, DEFAULT_TOP_N)
+        all_product_counts = cust_df.groupby("product_id")["quantity"].sum().sort_values(ascending=False)
+        exclude_pids = {fav_prem_pid, bulk_pid} - {None}
+        top_n_product_ids = [pid for pid in all_product_counts.index if pid not in exclude_pids][:n_products]
 
         # ---- Recently bought ----
         recent_name = _recently_bought(cust_df, product_flags)
@@ -533,6 +561,10 @@ def build_customer_profiles(
             "second_favorite_premium_product": second_prem_name,
             "recently_bought_product": recent_name,
             "complementary_product": complementary_name,
+            # ===== MATCHING ENGINE FIELDS =====
+            "favorite_premium_product_id": fav_prem_pid,
+            "favorite_bulk_product_id": bulk_pid,
+            "top_n_product_ids": top_n_product_ids,
             # ================================
             "category_affinity_scores": affinity_scores,
             # Backward-compat fields

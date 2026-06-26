@@ -114,6 +114,12 @@ class DiscountType(str, Enum):
     BOGO       = "bogo"  # buy-one-get-one
 
 
+class OfferMode(str, Enum):
+    """Offer application mode."""
+    INDIVIDUAL = "individual"  # discount applies to each product independently
+    COMBINED   = "combined"    # discount applies only when ALL products are purchased together
+
+
 class UploadCycle(str, Enum):
     """Upload frequency for a shop (determines period_tag format)."""
     MONTHLY = "monthly"  # period_tag = "2026-06"
@@ -155,9 +161,10 @@ class OfferCreate(BaseModel):
     description: Optional[str] = None
     discount_type: DiscountType
     discount_value: float                             # e.g. 20 (for 20% or ₹20 flat)
+    offer_mode: str = "individual"                   # "individual" or "combined"
     product_ids: List[str] = []                      # linked products (can be empty → category-wide)
     category: Optional[str] = None                   # optional category-wide scope
-    target_segments: List[str] = []                  # ["vip", "loyal_frequent"] etc.
+    target_segments: List[str] = []                  # optional segment tags (empty = open to all)
     valid_from: Optional[date] = None
     valid_until: Optional[date] = None
     is_active: bool = True
@@ -169,6 +176,7 @@ class OfferUpdate(BaseModel):
     description: Optional[str] = None
     discount_type: Optional[DiscountType] = None
     discount_value: Optional[float] = None
+    offer_mode: Optional[str] = None
     product_ids: Optional[List[str]] = None
     category: Optional[str] = None
     target_segments: Optional[List[str]] = None
@@ -186,6 +194,7 @@ class OfferResponse(BaseModel):
     description: Optional[str] = None
     discount_type: str
     discount_value: float
+    offer_mode: str = "individual"
     product_ids: List[str] = []
     category: Optional[str] = None
     target_segments: List[str] = []
@@ -342,6 +351,7 @@ class BatchCreate(BaseModel):
     start_time: datetime
     priority: int = 0
     ai_mode: bool = False
+    enable_upsell: bool = False                       # NEW: enable upsell offer matching
     fixed_product: Optional[str] = None
     period_tag: Optional[str] = None                  # NEW: which period this campaign covers
 

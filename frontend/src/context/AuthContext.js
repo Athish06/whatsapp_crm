@@ -23,12 +23,12 @@ export const AuthProvider = ({ children }) => {
     // If the cookie exists, the request will succeed
     const checkAuth = async () => {
       try {
-        // Try to access a protected route to verify authentication
-        // Note: This endpoint should be added to your backend
-        // For now, we'll assume the user is authenticated if we have a cookie
-        const token = document.cookie.includes('access_token');
-        if (token) {
+        const authFlag = sessionStorage.getItem('isAuthenticated');
+        if (authFlag === 'true') {
           setIsAuthenticated(true);
+        } else {
+          setIsAuthenticated(false);
+          setUser(null);
         }
       } catch (error) {
         setIsAuthenticated(false);
@@ -51,7 +51,8 @@ export const AuthProvider = ({ children }) => {
       const { access_token } = response.data;
       
       // Token is automatically stored in HTTP-only cookie by the backend
-      // We only track authentication state in React
+      // We track authentication state in React and sessionStorage
+      sessionStorage.setItem('isAuthenticated', 'true');
       setUser({ email });
       setIsAuthenticated(true);
       
@@ -73,7 +74,8 @@ export const AuthProvider = ({ children }) => {
       const { access_token } = response.data;
       
       // Token is automatically stored in HTTP-only cookie by the backend
-      // We only track authentication state in React
+      // We track authentication state in React and sessionStorage
+      sessionStorage.setItem('isAuthenticated', 'true');
       setUser({ email, full_name });
       setIsAuthenticated(true);
       
@@ -96,6 +98,7 @@ export const AuthProvider = ({ children }) => {
       console.error('Logout error:', error);
     } finally {
       // Clear local state regardless of backend response
+      sessionStorage.removeItem('isAuthenticated');
       setUser(null);
       setIsAuthenticated(false);
     }

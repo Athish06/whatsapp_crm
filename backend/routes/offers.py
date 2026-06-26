@@ -8,7 +8,7 @@ GET    /api/shops/{shop_id}/offers/{offer_id} — Get single offer
 PUT    /api/shops/{shop_id}/offers/{offer_id} — Update offer
 DELETE /api/shops/{shop_id}/offers/{offer_id} — Soft-delete offer
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from typing import Any, Optional
 
 from config import Database
@@ -38,6 +38,46 @@ async def create_offer(
         return offer
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ── CSV Bulk Upload ───────────────────────────────────────────────────────────
+@router.post("/{shop_id}/offers/upload-csv")
+async def upload_offers_csv(
+    shop_id: str,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+    svc: OffersService = Depends(_offers_service),
+):
+    """
+    Bulk-create offers from a CSV file.
+    
+    Required columns: title, discount_type, discount_value
+    Optional columns: description, offer_mode, product_ids, category,
+                     target_segments, valid_from, valid_until
+    
+    product_ids and target_segments should be comma-separated within the cell.
+    ALL product_ids must exist in the shop's product database or the entire
+    file will be rejected.
+    """
+    user_id = current_user.get("user_id") or current_user.get("id")
+    
+    # Read and decode CSV
+    content = await file.read()
+    try:
+        csv_text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            csv_text = content.decode("latin-1")
+        except Exception:
+            raise HTTPException(status_code=400, detail="Unable to decode CSV file. Use UTF-8 encoding.")
+    
+    try:
+        result = await svc.bulk_create_from_csv(shop_id, user_id, csv_text)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"CSV upload failed: {str(e)}")
 
 
 # ── List ──────────────────────────────────────────────────────────────────────

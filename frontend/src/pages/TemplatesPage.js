@@ -17,6 +17,7 @@ const SMART_VARS = [
   { key: 'offer_title', label: 'Offer Title', example: 'Great deals throughout our store', color: '#A855F7', desc: 'Matched offer title' },
   { key: 'offer_discount', label: 'Offer Discount', example: 'the best wholesale prices', color: '#F43F5E', desc: 'Matched discount (e.g. 20% OFF)' },
   { key: 'offer_product', label: 'Offer Product', example: 'your next household purchase', color: '#14B8A6', desc: 'Target product(s) for the offer' },
+  { key: 'offer_list', label: 'Offer List', example: '🏷️ 20% off Rice\n🏷️ 15% off Oil', color: '#D946EF', desc: 'Formatted list of all matched offers' },
 ];
 
 
@@ -71,6 +72,7 @@ const WhatsAppBubble = ({ text }) => {
 const TemplateForm = ({ initial, onSave, onCancel, saving }) => {
   const [form, setForm] = useState(initial || { name: '', content: '', segment: 'all' });
   const [showPreview, setShowPreview] = useState(true);
+  const [showVarPopup, setShowVarPopup] = useState(false);
   const textareaRef = useRef(null);
 
   // Real preview state
@@ -259,8 +261,59 @@ const TemplateForm = ({ initial, onSave, onCancel, saving }) => {
             rows={8}
             className="w-full bg-[#121212] border border-[#2E2E2E] focus:border-[#3ECF8E] rounded-lg p-3 text-sm outline-none resize-none transition-colors font-mono"
           />
-          <p className="text-xs text-muted-foreground mt-1">{form.content.length} chars · Use <code className="text-[#3ECF8E]">{'{{variable}}'}</code> to personalise</p>
+          <div className="flex items-center justify-between mt-1.5">
+            <p className="text-xs text-muted-foreground">{form.content.length} chars · Use <code className="text-[#3ECF8E]">{'{{variable}}'}</code> to personalise</p>
+            <button
+              type="button"
+              onClick={() => setShowVarPopup(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-[#3ECF8E]/10 text-[#3ECF8E] border border-[#3ECF8E]/30 rounded-lg hover:bg-[#3ECF8E]/20 transition-colors"
+            >
+              <Sparkles className="w-3.5 h-3.5" />Insert Variable
+            </button>
+          </div>
         </div>
+
+        {/* ── Variable Insertion Popup ── */}
+        {showVarPopup && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-[#1C1C1C] border border-[#2E2E2E] rounded-xl p-6 max-w-md w-full max-h-[80vh] flex flex-col">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-5 h-5 text-[#3ECF8E]" />
+                  <h3 className="text-lg font-bold">Insert Variable</h3>
+                  <span className="text-xs text-muted-foreground bg-[#2E2E2E] px-2 py-0.5 rounded-full">{SMART_VARS.length}</span>
+                </div>
+                <button onClick={() => setShowVarPopup(false)} className="p-1.5 hover:bg-[#2E2E2E] rounded-md transition-colors">
+                  <X className="w-5 h-5 text-muted-foreground" />
+                </button>
+              </div>
+              <div className="overflow-y-auto flex-1 space-y-1.5 pr-1">
+                {SMART_VARS.map(v => (
+                  <button
+                    key={v.key}
+                    onClick={() => { insertVar(v.key); setShowVarPopup(false); }}
+                    className="w-full group flex items-start gap-3 p-3 rounded-lg hover:bg-[#2E2E2E]/60 transition-colors text-left"
+                  >
+                    <div className="w-2.5 h-2.5 rounded-full mt-1.5 flex-shrink-0" style={{ backgroundColor: v.color }} />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <code className="text-sm font-mono" style={{ color: v.color }}>{`{{${v.key}}}`}</code>
+                        <span className="text-[10px] text-[#3ECF8E] opacity-0 group-hover:opacity-100 transition-opacity font-medium">+ Insert</span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">{v.desc}</p>
+                      <p className="text-[10px] text-white/40 italic">e.g. {v.example}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+              <div className="pt-3 mt-3 border-t border-[#2E2E2E]">
+                <button onClick={() => setShowVarPopup(false)} className="w-full py-2 text-sm text-muted-foreground hover:text-white transition-colors">
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Preview (inline on mobile) */}
         {showPreview && (

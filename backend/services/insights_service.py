@@ -134,11 +134,14 @@ async def recalculate_all_insights(db: AsyncIOMotorDatabase, shop_id: str) -> in
     )
 
     # ── Step 5: Level 2 — Behavioral Profiling ────────────────────────────
+    # Build segment_map so profiler can compute dynamic top_n per segment
+    segment_map = dict(zip(agg_df["customer_id"].astype(str), agg_df["segment"]))
     behavior_docs = build_customer_profiles(
         tx_df=tx_df,
         products_df=products_df,
         shop_id=shop_id,
         today=today,
+        segment_map=segment_map,
     )
 
     # Index behavior by customer_id for fast merge
@@ -186,6 +189,11 @@ async def recalculate_all_insights(db: AsyncIOMotorDatabase, shop_id: str) -> in
             "second_favorite_premium_product": behavior.get("second_favorite_premium_product"),
             "recently_bought_product": behavior.get("recently_bought_product"),
             "complementary_product": behavior.get("complementary_product"),
+
+            # ── Matching Engine Fields (Phase 1-4 of offer waterfall) ──
+            "favorite_premium_product_id": behavior.get("favorite_premium_product_id"),
+            "favorite_bulk_product_id": behavior.get("favorite_bulk_product_id"),
+            "top_n_product_ids": behavior.get("top_n_product_ids", []),
 
             # ── Analytics extras ──
             "category_affinity_scores": behavior.get("category_affinity_scores", {}),

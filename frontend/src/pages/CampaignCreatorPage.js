@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { Send, MessageCircle, Calendar, Hash, Plus, ArrowLeft, Users, Settings } from 'lucide-react';
+import { Send, MessageCircle, Calendar, Hash, Plus, ArrowLeft, Users, Settings, TrendingUp } from 'lucide-react';
 import { toast } from 'sonner';
 import { shopsAPI, templatesAPI, customersAPI, batchesAPI, offersAPI } from '../lib/api';
 
@@ -51,6 +51,7 @@ const CampaignCreatorPage = () => {
   const [scheduledTime, setScheduledTime] = useState('');
   const [batchSize, setBatchSize] = useState(100);
   const [launching, setLaunching] = useState(false);
+  const [enableUpsell, setEnableUpsell] = useState(false);
 
   // Navigate to templates builder carrying context to auto-redirect back
   const handleQuickCreateTemplate = (segment) => {
@@ -203,6 +204,7 @@ const CampaignCreatorPage = () => {
         segment_templates: segTemplatesObj,
         segment_offers: Object.keys(segOffersObj).length > 0 ? segOffersObj : null,
         ai_mode: templateStrategy === 'ai',
+        enable_upsell: enableUpsell,
         fixed_product: templateStrategy === 'fixed' ? fixedProduct : null,
       });
 
@@ -376,7 +378,7 @@ const CampaignCreatorPage = () => {
                           className="flex-1 bg-[#1C1C1C] border border-[#2E2E2E] rounded-md px-3 py-1.5 text-sm text-white focus:outline-none focus:border-[#3ECF8E]"
                         >
                           <option value="">— Skip this segment —</option>
-                          {templates.map((t) => (
+                          {templates.filter(t => t.segment === segment || t.segment === 'all' || !t.segment).map((t) => (
                             <option key={t.id} value={t.id}>{t.name} ({t.segment || 'all'})</option>
                           ))}
                         </select>
@@ -409,6 +411,33 @@ const CampaignCreatorPage = () => {
                   </div>
                 ))
               )}
+            </div>
+
+            {/* ── Upsell Toggle ── */}
+            <div className="border-t border-[#2E2E2E] pt-5 mt-2">
+              <div className="flex items-start gap-4 bg-[#121212] border border-[#2E2E2E] rounded-lg p-4">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-1">
+                    <TrendingUp className="w-4 h-4 text-[#F59E0B]" />
+                    <h4 className="font-medium text-white text-sm">Include Upsell Offers</h4>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Customers will also receive offers from the next tier up to encourage segment promotion
+                    (e.g., Loyal customers receive VIP-tier offers to incentivize upgrades).
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEnableUpsell(prev => !prev)}
+                  className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
+                    enableUpsell ? 'bg-[#F59E0B]' : 'bg-[#2E2E2E]'
+                  }`}
+                >
+                  <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                    enableUpsell ? 'translate-x-5' : 'translate-x-0'
+                  }`} />
+                </button>
+              </div>
             </div>
 
             <div className="flex justify-between items-center pt-6 border-t border-[#2E2E2E] mt-6">

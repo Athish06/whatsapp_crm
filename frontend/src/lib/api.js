@@ -9,6 +9,22 @@ const api = axios.create({
   withCredentials: true,  // CRITICAL: Enables sending and receiving cookies
 });
 
+// Global interceptor to handle expired/cleared cookies
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    // If any request gets a 401 Unauthorized, the cookie is missing or expired
+    if (error.response && error.response.status === 401) {
+      sessionStorage.removeItem('isAuthenticated');
+      // Redirect to login if not already there
+      if (window.location.pathname !== '/' && window.location.pathname !== '/register') {
+        window.location.href = '/';
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
 export default api;
 
 // API endpoints for authentication
@@ -140,6 +156,11 @@ export const offersAPI = {
   update:       (shopId, offerId, data)  => api.put(`/shops/${shopId}/offers/${offerId}`, data),
   delete:       (shopId, offerId)        => api.delete(`/shops/${shopId}/offers/${offerId}`),
   matchPreview: (shopId)                 => api.get(`/shops/${shopId}/offers/match`),
+  uploadCSV:    (shopId, file)           => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post(`/shops/${shopId}/offers/upload-csv`, formData);
+  },
 };
 
 // API endpoints for monitoring (Phase 5)
