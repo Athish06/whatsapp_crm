@@ -18,7 +18,7 @@ const OffersPage = () => {
     { key: 'at_risk', label: 'At-Risk' },
     { key: 'potential_bulk', label: 'Potential (Bulk)' },
     { key: 'loyal_frequent', label: 'Loyal (Frequent)' },
-    { key: 'new_customer', label: 'New Customer' },
+
     { key: 'boring', label: 'Occasional (Boring)' }
   ];
 

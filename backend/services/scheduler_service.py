@@ -1,34 +1,41 @@
 """
-Scheduler Worker — Asynchronous State Machine Engine
-=====================================================
+Scheduler Worker — Deterministic 6-State Engine
+================================================
 Non-blocking event-loop polling worker that processes the messages
-collection directly (msg_queues removed as a separate collection).
+collection directly.  APScheduler serves only as a 7-second clock tick;
+zero job state is kept in memory — MongoDB is the single source of truth.
 
-Phase 4 additions:
-  - Working hours gate: 9AM–7PM IST. Outside hours → skip cycle entirely.
-  - WhatsApp Web real sender via provider_adapter (PROVIDER_MODE=whatsapp_web)
-  - Handles reschedule_at from provider result (outside_working_hours / rate_limit)
-  - instant failed_permanently on invalid_number (no retry wasted)
-  - Stats computed from messages collection, not msg_queues
+6-State Lifecycle:
+    pending → processing → sent            (success)
+                        → retry_wait       (transient failure, attempt_count < 3)
+                        → failed_permanently (terminal or exhausted retries)
+                        → cancelled         (user-aborted campaign)
 
-Architecture:
-    - APScheduler interval trigger polls every POLL_INTERVAL_SECONDS
-    - Picks micro-batches of MICRO_BATCH_SIZE items per cycle
-    - Checks campaign status before each item (respects pause/cancel)
-    - Calls ProviderAdapter.send_message() for actual delivery
-    - Applies random jitter throttle (3.5–5.0s) between messages
-    - Exponential retry backoff: 2 minutes between retries, max 3 attempts
-    - Batch cooldown: 15–30s pause between micro-batch groups
+Gate Integration (DummyGateProvider):
+    Uses MD5 bucket math for deterministic, reproducible delivery simulation:
+        bucket = int(MD5(phone)[-6:], 16) % 100
+        0–1   → invalid_number  (immediate permanent failure)
+        2     → network_error   (3 retries → DLQ)
+        3–12  → rate_limit on 1st attempt, success on 2nd+
+        13–99 → instant success
 
-Timing Parameters (Configurable Boundary Matrix):
-    POLL_INTERVAL_SECONDS   = 7       (how often the heartbeat fires)
-    MICRO_BATCH_SIZE        = 8       (items per poll cycle, range 5–10)
-    INTER_MSG_JITTER_MIN    = 3.5     (seconds, min delay between messages)
-    INTER_MSG_JITTER_MAX    = 5.0     (seconds, max delay between messages)
-    BATCH_COOLDOWN_MIN      = 15      (seconds, min pause between micro-batches)
-    BATCH_COOLDOWN_MAX      = 30      (seconds, max pause between micro-batches)
-    RETRY_BACKOFF_SECONDS   = 120     (2 minutes between retry attempts)
-    MAX_RETRY_COUNT         = 3       (max attempts before failed_final)
+Demo-Friendly Backoff:
+    Attempt 1 failure → retry in 15 seconds
+    Attempt 2 failure → retry in 30 seconds
+    Attempt 3 failure → failed_permanently (DLQ)
+
+Deadlock Prevention:
+    - asyncio.wait_for(timeout=45s) hard-kills stalled processing threads
+    - try...finally scans for orphaned 'processing' records and releases them
+    - Orphan recovery: messages stuck in 'processing' for >60s are auto-reset
+
+Timing Parameters:
+    POLL_INTERVAL_SECONDS   = 7       (heartbeat frequency)
+    MICRO_BATCH_SIZE        = 8       (messages per poll cycle)
+    INTER_MSG_JITTER_MIN    = 0.5     (seconds between messages — fast for demo)
+    INTER_MSG_JITTER_MAX    = 1.5     (seconds between messages — fast for demo)
+    MAX_RETRY_COUNT         = 3       (max attempts before failed_permanently)
+    RETRY_BACKOFF = [15, 30]          (seconds: attempt 1, attempt 2)
 """
 import logging
 import asyncio
@@ -44,25 +51,31 @@ from services.whatsapp_sender import _now_ist, _next_day_9am_ist_utc
 
 logger = logging.getLogger(__name__)
 
-# ── IST working hours (same constants as whatsapp_sender) ─────────────────────
+# ── IST working hours ─────────────────────────────────────────────────────────
 WORKING_HOURS_START = 9   # 9 AM IST
 WORKING_HOURS_END   = 19  # 7 PM IST
 
 # ── Configurable Boundary Matrix ──────────────────────────────────────────────
 POLL_INTERVAL_SECONDS = 7
 MICRO_BATCH_SIZE = 8
-INTER_MSG_JITTER_MIN = 3.5
-INTER_MSG_JITTER_MAX = 5.0
-BATCH_COOLDOWN_MIN = 15
-BATCH_COOLDOWN_MAX = 30
-RETRY_BACKOFF_SECONDS = 120
+INTER_MSG_JITTER_MIN = 0.5    # fast for demo
+INTER_MSG_JITTER_MAX = 1.5    # fast for demo
 MAX_RETRY_COUNT = 3
+
+# Demo-friendly backoff schedule (seconds per attempt number)
+RETRY_BACKOFF_BY_ATTEMPT = {
+    1: 15,   # First failure  → wait 15s
+    2: 30,   # Second failure → wait 30s
+}
+
+# Orphan threshold: if a message stays 'processing' longer than this, recover it
+ORPHAN_THRESHOLD_SECONDS = 60
 
 
 class SchedulerWorker:
     """
-    Background async worker that processes the messages collection directly.
-    Phase 4: msg_queues removed; messages is the single source of truth.
+    Background async worker — DB-driven 6-state message engine.
+    APScheduler fires every 7s; all scheduling logic lives in MongoDB.
     """
 
     def __init__(self, db: Any):
@@ -92,7 +105,8 @@ class SchedulerWorker:
         logger.info(
             f"✓ Scheduler worker started "
             f"(poll={POLL_INTERVAL_SECONDS}s, batch={MICRO_BATCH_SIZE}, "
-            f"jitter={INTER_MSG_JITTER_MIN}-{INTER_MSG_JITTER_MAX}s)"
+            f"jitter={INTER_MSG_JITTER_MIN}-{INTER_MSG_JITTER_MAX}s, "
+            f"backoff=[15s,30s], gate=DummyGateProvider/MD5)"
         )
 
     def stop(self):
@@ -108,24 +122,28 @@ class SchedulerWorker:
     async def _poll_cycle(self):
         """
         Main heartbeat — fires every POLL_INTERVAL_SECONDS.
-        Phase 4: First checks working hours, then processes due messages.
+        Queries MongoDB for due messages, processes them through the 6-state machine.
         """
         if self._processing:
             return  # Previous cycle still running — skip
         self._processing = True
 
         try:
-            # ── Phase 4: Working Hours Gate ───────────────────────────────
+            # ── Working Hours Gate ────────────────────────────────────────
             hour_ist = _now_ist().hour
             if not (WORKING_HOURS_START <= hour_ist < WORKING_HOURS_END):
                 logger.debug(
-                    f"[Worker] Outside working hours ({hour_ist}:xx IST). Would skip cycle, but disabled for testing."
+                    f"[Worker] Outside working hours ({hour_ist}:xx IST). Disabled for testing."
                 )
-                # return  # TEMPORARILY DISABLED FOR TESTING SO USER CAN SEE IT WORKING
+                # return  # TEMPORARILY DISABLED FOR TESTING
+
+            # ── Orphan Recovery: release stale 'processing' records ───────
+            await self._recover_orphans()
 
             current_time = datetime.now(timezone.utc)
 
-            # ── Time-Window Fetch: find due items from messages collection ─
+            # ── Time-Window Fetch ─────────────────────────────────────────
+            # Query: status IN ['pending','retry_wait'] AND next_attempt_at <= now
             query = {
                 "status": {"$in": ["pending", "retry_wait"]},
                 "next_attempt_at": {"$lte": current_time},
@@ -133,13 +151,15 @@ class SchedulerWorker:
             cursor = self.db.messages.find(
                 query, {"_id": 0}
             ).sort([
-                ("priority", 1),          # VIP first
+                ("priority", 1),          # VIP first (priority=1)
                 ("next_attempt_at", 1),   # Oldest due first
             ]).limit(MICRO_BATCH_SIZE)
 
             items = await cursor.to_list(length=MICRO_BATCH_SIZE)
 
             if not items:
+                # ── Dynamic Macro Consolidation (Auto-Complete Check) ─────
+                await self._auto_complete_campaigns()
                 return  # Nothing due — silent return
 
             logger.info(f"[Worker] Picked up {len(items)} due items")
@@ -165,26 +185,25 @@ class SchedulerWorker:
                             await self._cancel_item(item)
                             continue
 
-                # ── Process the item ──
-                await self._process_item(item)
+                # ── Process the item (hard 45s timeout to break any deadlock) ──
+                try:
+                    await asyncio.wait_for(self._process_item(item), timeout=45.0)
+                except asyncio.TimeoutError:
+                    logger.error(
+                        f"[Worker] ✗ TIMEOUT processing item {item.get('id')} — deadlock broken."
+                    )
+                except Exception as ex:
+                    logger.error(
+                        f"[Worker] ✗ Unhandled exception processing item {item.get('id')}: {ex}"
+                    )
                 processed += 1
 
-                # ── Structural Throttle (inter-message jitter) ──
+                # ── Inter-message jitter (demo-friendly, fast) ──
                 jitter = random.uniform(INTER_MSG_JITTER_MIN, INTER_MSG_JITTER_MAX)
                 await asyncio.sleep(jitter)
 
             if processed > 0:
                 logger.info(f"[Worker] Cycle complete: {processed} items processed")
-
-                # ── Batch Cooldown ──
-                more_due = await self.db.messages.count_documents({
-                    "status": {"$in": ["pending", "retry_wait"]},
-                    "next_attempt_at": {"$lte": datetime.now(timezone.utc)},
-                })
-                if more_due > 0:
-                    cooldown = random.uniform(BATCH_COOLDOWN_MIN, BATCH_COOLDOWN_MAX)
-                    logger.info(f"[Worker] Batch cooldown: {cooldown:.1f}s before next cycle")
-                    await asyncio.sleep(cooldown)
 
         except Exception as e:
             logger.error(f"[Worker] Poll cycle error: {e}", exc_info=True)
@@ -192,137 +211,266 @@ class SchedulerWorker:
             self._processing = False
 
     # ──────────────────────────────────────────────────────────────────────
+    # Orphan Recovery
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def _recover_orphans(self):
+        """
+        Detect messages stuck in 'processing' longer than ORPHAN_THRESHOLD_SECONDS.
+        These are caused by a previous server crash or hard timeout.
+        Reset them to 'retry_wait' (or 'pending' if attempt_count == 0) with
+        incremented attempt_count so they can be retried cleanly.
+        """
+        threshold = datetime.now(timezone.utc) - timedelta(seconds=ORPHAN_THRESHOLD_SECONDS)
+        orphan_cursor = self.db.messages.find({
+            "status": "processing",
+            "updated_at": {"$lt": threshold.isoformat()}
+        }, {"_id": 0, "id": 1, "attempt_count": 1})
+        orphans = await orphan_cursor.to_list(length=50)
+        for orphan in orphans:
+            orphan_id = orphan.get("id")
+            attempt_count = orphan.get("attempt_count", 0) + 1
+            now_iso = datetime.now(timezone.utc).isoformat()
+            if attempt_count >= MAX_RETRY_COUNT:
+                await self.db.messages.update_one(
+                    {"id": orphan_id},
+                    {"$set": {
+                        "status": "failed_permanently",
+                        "failure_reason": "worker_crash_or_timeout",
+                        "attempt_count": attempt_count,
+                        "dlq_at": now_iso,
+                        "updated_at": now_iso,
+                    }}
+                )
+                logger.error(f"[Worker] ⚠ Orphan {orphan_id} exhausted retries → failed_permanently")
+            else:
+                backoff = RETRY_BACKOFF_BY_ATTEMPT.get(attempt_count, 30)
+                next_retry = datetime.now(timezone.utc) + timedelta(seconds=backoff)
+                await self.db.messages.update_one(
+                    {"id": orphan_id},
+                    {"$set": {
+                        "status": "retry_wait",
+                        "failure_reason": "worker_crash_or_timeout",
+                        "attempt_count": attempt_count,
+                        "next_attempt_at": next_retry,
+                        "updated_at": now_iso,
+                    }}
+                )
+                logger.warning(f"[Worker] ⚠ Orphan {orphan_id} recovered → retry_wait (attempt {attempt_count})")
+
+    # ──────────────────────────────────────────────────────────────────────
     # Process a single queue item
     # ──────────────────────────────────────────────────────────────────────
 
     async def _process_item(self, item: Dict[str, Any]):
         """
-        Process a single messages item through the state machine.
-        Phase 4: operates directly on messages collection (no msg_queues mirror).
+        Process a single messages item through the 6-state machine.
+        Uses attempt_count (reads retry_count as fallback for old messages).
         """
         item_id = item.get("id")
         phone = item.get("phone_number", "")
         user_id = item.get("user_id", "")
         now = datetime.now(timezone.utc)
 
-        # ── Step 1: Atomic Concurrency Lock ──
+        # Read attempt_count (new field) — fallback to retry_count for backward compat
+        current_attempt = item.get("attempt_count", item.get("retry_count", 0))
+        # Increment BEFORE calling the gate (attempt 1 = first try)
+        this_attempt = current_attempt + 1
+
+        # ── Step 1: Atomic Concurrency Lock ──────────────────────────────
         lock_result = await self.db.messages.update_one(
             {"id": item_id, "status": {"$in": ["pending", "retry_wait"]}},
             {"$set": {
                 "status": "processing",
+                "attempt_count": this_attempt,
+                "processing_started_at": now.isoformat(),
                 "updated_at": now.isoformat(),
             }},
         )
         if lock_result.modified_count == 0:
             return  # Another worker already grabbed it
 
-        # ── Step 2: Get message content ──
+        # ── Step 2: Get message content ───────────────────────────────────
         content = item.get("message_content", "")
 
-        # ── Step 3: Call Provider Adapter ──
         try:
-            result = await ProviderAdapter.send_message(phone, content)
-        except Exception as e:
-            result = {"success": False, "provider_sid": None, "error": str(e), "reschedule_at": None}
+            # ── Step 3: Call DummyGateProvider ────────────────────────────
+            try:
+                result = await ProviderAdapter.send_message(phone, content, attempt_count=this_attempt)
+            except Exception as e:
+                result = {
+                    "success": False,
+                    "provider_sid": None,
+                    "error": str(e),
+                    "outcome": "temporary",
+                    "reschedule_at": None,
+                }
 
-        # ── Step 4: Handle result ──
-        if result.get("success"):
-            await self._handle_success(item, result, now)
-        else:
-            await self._handle_failure(item, result, now)
+            # ── Step 4: State Transition Triage ───────────────────────────
+            if result.get("success"):
+                await self._handle_success(item, result, now)
+            elif result.get("outcome") == "permanent":
+                await self._handle_permanent_failure(item, result, now, this_attempt)
+            else:
+                # Transient failure (network / rate_limit)
+                await self._handle_transient_failure(item, result, now, this_attempt)
 
-        # ── Step 5: Update batch & campaign stats ──
-        await self._update_batch_stats(item.get("batch_id"), user_id)
-        campaign_id = item.get("campaign_id")
-        if campaign_id:
-            await self._update_campaign_stats(campaign_id)
+            # ── Step 5: Update batch & campaign stats ─────────────────────
+            await self._update_batch_stats(item.get("batch_id"), user_id)
+            campaign_id = item.get("campaign_id")
+            if campaign_id:
+                await self._update_campaign_stats(campaign_id)
+
+        finally:
+            # ── Step 6: Strict Deadlock Fallback ─────────────────────────
+            # If the item is STILL 'processing' after everything (crash/timeout), release it.
+            stuck_check = await self.db.messages.find_one(
+                {"id": item_id, "status": "processing"}
+            )
+            if stuck_check:
+                now_iso = datetime.now(timezone.utc).isoformat()
+                logger.error(
+                    f"[Worker] ⚠ Item {item_id} stuck in processing. Releasing to failed_permanently."
+                )
+                await self.db.messages.update_one(
+                    {"id": item_id},
+                    {"$set": {
+                        "status": "failed_permanently",
+                        "failure_reason": "worker_crash_or_timeout",
+                        "dlq_at": now_iso,
+                        "updated_at": now_iso,
+                    }}
+                )
 
     # ──────────────────────────────────────────────────────────────────────
-    # Success handler
+    # Success Handler
     # ──────────────────────────────────────────────────────────────────────
 
     async def _handle_success(self, item: Dict, result: Dict, now: datetime):
-        """Mark message as delivered in messages collection."""
+        """Mark message as sent (success state)."""
         item_id = item.get("id")
         provider_sid = result.get("provider_sid", "")
+        now_iso = now.isoformat()
 
         await self.db.messages.update_one(
             {"id": item_id},
             {"$set": {
-                "status": "delivered",
+                "status": "sent",
                 "provider_sid": provider_sid,
-                "sent_at": now.isoformat(),
-                "processed_at": now,
-                "updated_at": now.isoformat(),
+                "delivered_at": now_iso,
+                "failure_reason": None,
+                "updated_at": now_iso,
+            },
+            "$push": {
+                "error_log": {
+                    "timestamp": now_iso,
+                    "code": "success",
+                    "message": f"Delivered via {provider_sid}",
+                    "attempt_count": item.get("attempt_count", 1),
+                }
             }},
         )
-        logger.info(f"[Worker] ✓ Delivered {item.get('phone_number')} (sid={provider_sid})")
+        logger.info(f"[Worker] ✓ SENT {item.get('phone_number')} (sid={provider_sid})")
 
     # ──────────────────────────────────────────────────────────────────────
-    # Failure handler with exponential retry backoff
+    # Permanent Failure Handler (Terminal DLQ — no retries)
     # ──────────────────────────────────────────────────────────────────────
 
-    async def _handle_failure(self, item: Dict, result: Dict, now: datetime):
+    async def _handle_permanent_failure(self, item: Dict, result: Dict, now: datetime, this_attempt: int):
         """
-        Phase 4 failure handler:
-        - invalid_number → failed_permanently immediately (no retry wasted)
-        - outside_working_hours / rate_limit → reschedule to result[reschedule_at]
-        - other errors → exponential retry backoff (max 3 attempts)
+        Terminal failure (e.g. invalid_number).
+        Bypass retries entirely — straight to failed_permanently.
         """
         item_id = item.get("id")
-        current_retry = item.get("retry_count", 0)
-        new_retry = current_retry + 1
-        error_msg = result.get("error", "Unknown error")
-        reschedule_at = result.get("reschedule_at")   # datetime | None
+        error_msg = result.get("error", "permanent_failure")
+        now_iso = now.isoformat()
 
-        # Build error log entry
+        await self.db.messages.update_one(
+            {"id": item_id},
+            {"$set": {
+                "status": "failed_permanently",
+                "failure_reason": error_msg,
+                "attempt_count": this_attempt,
+                "dlq_at": now_iso,
+                "delivered_at": None,
+                "updated_at": now_iso,
+            },
+            "$push": {
+                "error_log": {
+                    "timestamp": now_iso,
+                    "code": error_msg,
+                    "message": f"Terminal failure: {error_msg}",
+                    "attempt_count": this_attempt,
+                }
+            }},
+        )
+        logger.warning(
+            f"[Worker] ✗ FAILED_PERMANENTLY {item.get('phone_number')} "
+            f"reason={error_msg} (terminal, no retry)"
+        )
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Transient Failure Handler (retry or DLQ after 3 attempts)
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def _handle_transient_failure(self, item: Dict, result: Dict, now: datetime, this_attempt: int):
+        """
+        Transient failure (network, rate_limit).
+        If attempt_count < MAX_RETRY_COUNT → retry_wait with backoff.
+        If attempt_count >= MAX_RETRY_COUNT → failed_permanently (DLQ).
+        """
+        item_id = item.get("id")
+        error_msg = result.get("error", "unknown_error")
+        now_iso = now.isoformat()
+
         error_entry = {
-            "timestamp": now.isoformat(),
-            "error": error_msg,
-            "attempt": new_retry,
+            "timestamp": now_iso,
+            "code": error_msg,
+            "message": f"Transient failure: {error_msg}",
+            "attempt_count": this_attempt,
         }
-        error_log = item.get("error_log", [])
-        if not isinstance(error_log, list):
-            error_log = []
-        error_log.append(error_entry)
 
-        # ── Case A: Invalid number → failed_permanently, no retry ─────────
-        if error_msg == "invalid_number":
+        if this_attempt >= MAX_RETRY_COUNT:
+            # ── Exhausted Retries → DLQ ───────────────────────────────────
             await self.db.messages.update_one(
                 {"id": item_id},
                 {"$set": {
                     "status": "failed_permanently",
-                    "failure_reason": "invalid_number",
-                    "retry_count": new_retry,
-                    "error_log": error_log,
-                    "failed_at": now.isoformat(),
-                    "updated_at": now.isoformat(),
-                }},
+                    "failure_reason": error_msg,
+                    "attempt_count": this_attempt,
+                    "dlq_at": now_iso,
+                    "delivered_at": None,
+                    "updated_at": now_iso,
+                },
+                "$push": {"error_log": error_entry}},
             )
             logger.warning(
-                f"[Worker] ✗ INVALID_NUMBER {item.get('phone_number')} — permanently failed"
+                f"[Worker] ✗ FAILED_PERMANENTLY {item.get('phone_number')} "
+                f"after {this_attempt} attempts: {error_msg}"
             )
-            return
+        else:
+            # ── Schedule Retry ────────────────────────────────────────────
+            backoff_seconds = RETRY_BACKOFF_BY_ATTEMPT.get(this_attempt, 30)
+            next_attempt_at = now + timedelta(seconds=backoff_seconds)
 
-        # ── Case B: outside_working_hours or rate_limit → reschedule ──────
-        if reschedule_at is not None:
-            status = "pending"   # Will be picked up after reschedule_at passes
             await self.db.messages.update_one(
                 {"id": item_id},
                 {"$set": {
-                    "status": status,
+                    "status": "retry_wait",
                     "failure_reason": error_msg,
-                    "retry_count": current_retry,  # Don't count as a retry
-                    "next_attempt_at": reschedule_at,
-                    "error_log": error_log,
-                    "updated_at": now.isoformat(),
-                }},
+                    "attempt_count": this_attempt,
+                    "next_attempt_at": next_attempt_at,
+                    "updated_at": now_iso,
+                },
+                "$push": {"error_log": error_entry}},
             )
-            logger.info(
-                f"[Worker] ⏰ RESCHEDULED {item.get('phone_number')} "
-                f"({error_msg}) → {reschedule_at.isoformat()}"
+            logger.warning(
+                f"[Worker] ⟳ RETRY_WAIT {item.get('phone_number')} "
+                f"(attempt {this_attempt}/{MAX_RETRY_COUNT}, "
+                f"next in {backoff_seconds}s at {next_attempt_at.isoformat()})"
             )
-            # Also bulk-reschedule all other pending messages for this campaign
+
+            # If rate_limit — bulk-reschedule all other pending messages for this campaign
             if error_msg == "rate_limit" and item.get("campaign_id"):
                 await self.db.messages.update_many(
                     {
@@ -331,55 +479,18 @@ class SchedulerWorker:
                         "id": {"$ne": item_id},
                     },
                     {"$set": {
-                        "next_attempt_at": reschedule_at,
+                        "next_attempt_at": next_attempt_at,
                         "failure_reason": "rate_limit",
-                        "status": "pending",
-                        "updated_at": now.isoformat(),
+                        "status": "retry_wait",
+                        "updated_at": now_iso,
                     }},
                 )
                 logger.warning(
-                    f"[Worker] ⏰ Rate limit: bulk-rescheduled remaining campaign "
-                    f"{item['campaign_id']} messages to {reschedule_at.isoformat()}"
+                    f"[Worker] ⏰ Rate limit bulk-reschedule for campaign {item['campaign_id']}"
                 )
-            return
-
-        # ── Case C: Generic failure → exponential retry ───────────────────
-        if new_retry >= MAX_RETRY_COUNT:
-            await self.db.messages.update_one(
-                {"id": item_id},
-                {"$set": {
-                    "status": "failed_final",
-                    "failure_reason": error_msg,
-                    "retry_count": new_retry,
-                    "error_log": error_log,
-                    "failed_at": now.isoformat(),
-                    "updated_at": now.isoformat(),
-                }},
-            )
-            logger.warning(
-                f"[Worker] ✗ FAILED_FINAL {item.get('phone_number')} "
-                f"after {new_retry} attempts: {error_msg}"
-            )
-        else:
-            next_attempt = now + timedelta(seconds=RETRY_BACKOFF_SECONDS)
-            await self.db.messages.update_one(
-                {"id": item_id},
-                {"$set": {
-                    "status": "retry_wait",
-                    "failure_reason": error_msg,
-                    "retry_count": new_retry,
-                    "error_log": error_log,
-                    "next_attempt_at": next_attempt,
-                    "updated_at": now.isoformat(),
-                }},
-            )
-            logger.warning(
-                f"[Worker] ⟳ RETRY_WAIT {item.get('phone_number')} "
-                f"(attempt {new_retry}/{MAX_RETRY_COUNT}, next at {next_attempt.isoformat()})"
-            )
 
     # ──────────────────────────────────────────────────────────────────────
-    # Cancel handler
+    # Cancel Handler
     # ──────────────────────────────────────────────────────────────────────
 
     async def _cancel_item(self, item: Dict):
@@ -393,7 +504,43 @@ class SchedulerWorker:
         )
 
     # ──────────────────────────────────────────────────────────────────────
-    # Stats updaters
+    # Auto-Complete Check (Dynamic Macro Consolidation)
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def _auto_complete_campaigns(self):
+        """
+        When the queue is empty, scan for campaigns still marked 'sending'.
+        For each, count remaining active messages. If 0, flip status to 'completed'.
+        This stops the frontend from showing an infinite loading spinner.
+
+        Remaining Count Formula:
+            count(messages where status IN ['pending', 'processing', 'retry_wait'])
+            If count == 0 → campaign.status = 'completed'
+        """
+        active_campaigns = await self.db.campaigns.find(
+            {"status": "sending"}, {"_id": 1}
+        ).to_list(None)
+
+        for camp in active_campaigns:
+            camp_id = camp["_id"]
+            remaining = await self.db.messages.count_documents({
+                "campaign_id": camp_id,
+                "status": {"$in": ["pending", "processing", "retry_wait"]}
+            })
+            if remaining == 0:
+                now = datetime.now(timezone.utc)
+                await self.db.campaigns.update_one(
+                    {"_id": camp_id, "status": "sending"},  # Conditional: only if still 'sending'
+                    {"$set": {
+                        "status": "completed",
+                        "completed_at": now,
+                        "updated_at": now,
+                    }}
+                )
+                logger.info(f"[Worker] 🏁 Auto-Complete: Campaign {camp_id} → completed!")
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Stats Updaters
     # ──────────────────────────────────────────────────────────────────────
 
     async def _update_batch_stats(self, batch_id: str, user_id: str):
@@ -410,28 +557,29 @@ class SchedulerWorker:
         async for doc in cursor:
             counts[doc["_id"]] = doc["count"]
 
-        delivered = counts.get("delivered", 0)
-        failed_final = counts.get("failed_final", 0) + counts.get("failed_permanently", 0)
-        pending = counts.get("pending", 0) + counts.get("retry_wait", 0)
-        processing = counts.get("processing", 0)
-        cancelled = counts.get("cancelled", 0)
+        # Support both 'sent' (new) and 'delivered' (legacy)
+        success_count = counts.get("sent", 0) + counts.get("delivered", 0)
+        failed_count = counts.get("failed_permanently", 0) + counts.get("failed_final", 0)
+        pending_count = counts.get("pending", 0) + counts.get("retry_wait", 0)
+        processing_count = counts.get("processing", 0)
+        cancelled_count = counts.get("cancelled", 0)
         total = sum(counts.values())
 
         # Determine batch status
-        if pending == 0 and processing == 0:
-            if failed_final > 0 and delivered == 0:
+        if pending_count == 0 and processing_count == 0:
+            if failed_count > 0 and success_count == 0:
                 batch_status = "failed"
             else:
                 batch_status = "completed"
-        elif cancelled == total:
+        elif cancelled_count == total:
             batch_status = "cancelled"
         else:
             batch_status = "sending"
 
         update_doc = {
-            "success_count": delivered,
-            "failed_count": failed_final,
-            "pending_count": pending + processing,
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "pending_count": pending_count + processing_count,
         }
 
         if batch_status in ("completed", "failed"):
@@ -465,7 +613,7 @@ class SchedulerWorker:
         total_failed = sum(b.get("failed_count", 0) for b in batches)
         total_customers = sum(b.get("customer_count", 0) for b in batches)
 
-        # Per-segment aggregation (from messages, not msg_queues)
+        # Per-segment aggregation from messages
         batch_ids = [b["id"] for b in batches if b.get("id")]
         segment_stats = {}
         if batch_ids:
@@ -509,18 +657,26 @@ class SchedulerWorker:
         if current and current.get("status") in ("paused", "cancelled", "stopped"):
             status = current["status"]
 
+        update_fields = {
+            "status": status,
+            "completed_batches": completed_batches,
+            "total_batches": len(batches),
+            "total_customers": total_customers,
+            "messages_sent": total_sent,
+            "messages_failed": total_failed,
+            "segment_stats": segment_stats,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        if status == "completed":
+            current_comp = await self.db.campaigns.find_one(
+                {"_id": campaign_id}, {"_id": 0, "completed_at": 1}
+            )
+            if not current_comp or not current_comp.get("completed_at"):
+                update_fields["completed_at"] = datetime.now(timezone.utc)
+
         await self.db.campaigns.update_one(
             {"_id": campaign_id},
-            {"$set": {
-                "status": status,
-                "completed_batches": completed_batches,
-                "total_batches": len(batches),
-                "total_customers": total_customers,
-                "messages_sent": total_sent,
-                "messages_failed": total_failed,
-                "segment_stats": segment_stats,
-                "updated_at": datetime.now(timezone.utc),
-            }},
+            {"$set": update_fields},
         )
 
     # ──────────────────────────────────────────────────────────────────────
@@ -539,8 +695,8 @@ class SchedulerWorker:
             "pending": stats.get("pending", 0),
             "processing": stats.get("processing", 0),
             "retry_wait": stats.get("retry_wait", 0),
-            "delivered": stats.get("delivered", 0),
-            "failed_final": stats.get("failed_final", 0) + stats.get("failed_permanently", 0),
+            "sent": stats.get("sent", 0) + stats.get("delivered", 0),   # unified
+            "failed_permanently": stats.get("failed_permanently", 0) + stats.get("failed_final", 0),
             "cancelled": stats.get("cancelled", 0),
             "total": sum(stats.values()),
         }

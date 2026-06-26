@@ -100,10 +100,13 @@ def classify_customers_rfm(
     df['total_quantity'] = pd.to_numeric(df['total_quantity'], errors='coerce').fillna(0)
     
     # Parse last transaction date
-    if today is None:
-        today = pd.Timestamp.now()
-    
     df['last_transaction_date'] = pd.to_datetime(df['last_transaction_date'], errors='coerce')
+    
+    if today is None or pd.isna(today):
+        today = df['last_transaction_date'].max()
+        if pd.isna(today):
+            today = pd.Timestamp.now()
+    
     df['last_transaction_date'] = df['last_transaction_date'].fillna(today)
     
     # ==== PHASE 1: FEATURE ENGINEERING (Raw Metrics) ====
@@ -122,22 +125,18 @@ def classify_customers_rfm(
     # ==== PHASE 2: QUINTILE SCORING (1-5) ====
     # -----------------------------------------------------------------
     # RECENCY SCORE — Rank-based Quintile Method
-    #   Step 2: Rank raw recency (lowest days = most recent = lowest rank)
-    #   Step 3: qcut on ranks with reversed labels so:
-    #           Top 20% most recent (lowest rank) → Score 5
-    #           Bottom 20% oldest  (highest rank) → Score 1
-    # This handles ties and small datasets far better than direct qcut.
+    #   Bottom 20% of days (most recent shoppers) → Score 5
+    #   Top 20% of days (cold, long-absent shoppers) → Score 1
     # -----------------------------------------------------------------
     df['recency_rank'] = df['recency_raw'].rank(method='average')
     try:
         df['r_score'] = pd.qcut(
             df['recency_rank'],
             q=5,
-            labels=[5, 4, 3, 2, 1],   # reversed: low rank (recent) → 5
+            labels=[5, 4, 3, 2, 1],   # low rank (recent) → 5
             duplicates='drop'
         ).astype(int)
     except (ValueError, TypeError):
-        # Fallback for very small / uniform datasets
         try:
             df['r_score'] = pd.cut(
                 df['recency_rank'],
@@ -146,7 +145,7 @@ def classify_customers_rfm(
                 include_lowest=True
             ).astype(int)
         except Exception:
-            df['r_score'] = 3  # default mid-range score
+            df['r_score'] = 3
     
     # -----------------------------------------------------------------
     # FREQUENCY SCORE — Rank-based Quintile Method
@@ -229,41 +228,45 @@ def classify_customers_rfm(
     
     # ==== PHASE 3: 5-TIER WATERFALL DECISION TREE ====
     def apply_waterfall_segmentation(row, previous_segment=None):
+        """
+        Enhanced Self-Balancing 5-Tier Waterfall.
+
+        Rules (evaluated top-to-bottom; first match wins):
+          1. VIP         — total >= 12 AND (m >= 4 OR f == 5)
+          2. At-Risk     — r == 1 AND total > 4
+          3. Potential Bulk — 5 <= total <= 11 AND bulkiness > store_avg_bulkiness
+          4. Loyal Frequent — total >= 5 AND f >= 3 AND f >= m
+          5. Boring      — catch-all
+        """
         total_score = row['rfm_score']
         r_score = row['r_score']
         f_score = row['f_score']
         m_score = row['m_score']
-        b_score = row.get('b_score', 3)
-        purchase_count = row.get('purchase_count', 0)
-        recency_days = row.get('recency_raw', 999)  # aliased to recency_raw earlier
-        
-        # ── Rule 0: NEW CUSTOMER (pre-waterfall escape) ──
-        if purchase_count <= 2 and recency_days <= 30:
-            return CustomerCategory.NEW_CUSTOMER.value
-            
-        # ── Rule 1: VIP (Champions) ──
-        # Total >= 12, with frequency override for daily shoppers
+        bulk = float(row.get('bulkiness', 0.0))
+
+        # ── Rule 1: VIP Champions (Frequency Override) ──
+        # Catches highest spenders AND highly frequent daily shoppers
         if total_score >= 12 and (m_score >= 4 or f_score == 5):
             return CustomerCategory.VIP.value
-        
-        # ── Rule 2: AT-RISK (Churn Prevention) ──
-        # Classic trigger: low recency but was historically valuable
-        if r_score <= 2 and (f_score + m_score) >= 5:
+
+        # ── Rule 2: At-Risk Churn (tightened to bottom-20% recency only) ──
+        # r_score == 1 means coldest 20% of dataset — historically valuable but gone cold
+        elif r_score == 1 and total_score > 4:
             return CustomerCategory.AT_RISK.value
-        # Churn velocity: was VIP/Loyal last period, R is dropping
-        if previous_segment in (CustomerCategory.VIP.value, CustomerCategory.LOYAL_FREQUENT.value) and r_score <= 3:
-            return CustomerCategory.AT_RISK.value
-        
-        # ── Rule 3: POTENTIAL BULK (Pantry Stockers) ──
-        if 5 <= total_score <= 11 and b_score >= 4:
+
+        # ── Rule 3: Potential Bulk Pantry Stockers ──
+        # Moderate engagement BUT buys significantly more items per basket than store average
+        elif 5 <= total_score <= 11 and bulk > store_avg_bulkiness:
             return CustomerCategory.POTENTIAL_BULK.value
-        
-        # ── Rule 4: LOYAL FREQUENT (Daily Habit) ──
-        if 5 <= total_score <= 11 and f_score >= 3 and f_score >= m_score:
+
+        # ── Rule 4: Loyal Frequent Daily Habit (floor lowered to total >= 5) ──
+        # Rescues regular foot-traffic from falling into Boring bucket
+        elif total_score >= 5 and f_score >= 3 and f_score >= m_score:
             return CustomerCategory.LOYAL_FREQUENT.value
-        
-        # ── Rule 5: BORING / OCCASIONAL (Baseline) ──
-        return CustomerCategory.BORING.value
+
+        # ── Rule 5: Boring Baseline Catch-All ──
+        else:
+            return CustomerCategory.BORING.value
     
     df['category'] = df.apply(apply_waterfall_segmentation, axis=1)
     df['segment'] = df['category']

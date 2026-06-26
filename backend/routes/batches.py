@@ -3,7 +3,7 @@ Batch routes for campaign management.
 """
 from fastapi import APIRouter, HTTPException, Depends, Query
 from typing import Any
-from datetime import datetime
+from datetime import datetime, timezone
 from schemas import BatchCreate, BatchSplitEstimate, BatchUpdateRequest
 from services import BatchService
 from middleware import get_current_user
@@ -251,9 +251,20 @@ async def list_campaigns(
         for c in campaigns:
             c["_id"] = str(c["_id"])
             if isinstance(c.get("created_at"), datetime):
-                c["created_at"] = c["created_at"].isoformat()
+                dt = c["created_at"]
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                c["created_at"] = dt.isoformat()
             if isinstance(c.get("updated_at"), datetime):
-                c["updated_at"] = c["updated_at"].isoformat()
+                dt = c["updated_at"]
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                c["updated_at"] = dt.isoformat()
+            if isinstance(c.get("completed_at"), datetime):
+                dt = c["completed_at"]
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                c["completed_at"] = dt.isoformat()
 
             # Live message counts straight from messages collection
             campaign_id = c["_id"]
@@ -332,9 +343,20 @@ async def get_campaign_details(
         
         # Convert datetime fields
         if isinstance(campaign.get("created_at"), datetime):
-            campaign["created_at"] = campaign["created_at"].isoformat()
+            dt = campaign["created_at"]
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            campaign["created_at"] = dt.isoformat()
         if isinstance(campaign.get("updated_at"), datetime):
-            campaign["updated_at"] = campaign["updated_at"].isoformat()
+            dt = campaign["updated_at"]
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            campaign["updated_at"] = dt.isoformat()
+        if isinstance(campaign.get("completed_at"), datetime):
+            dt = campaign["completed_at"]
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            campaign["completed_at"] = dt.isoformat()
         campaign["_id"] = str(campaign["_id"])
         
         return {
@@ -377,8 +399,8 @@ async def pause_campaign(
     try:
         user_id = current_user.get("user_id") or current_user.get("id")
         result = await db.campaigns.update_one(
-            {"_id": campaign_id, "user_id": user_id, "status": {"$in": ["sending", "pending"]}},
-            {"$set": {"status": "paused", "updated_at": datetime.now()}},
+            {"_id": campaign_id, "user_id": user_id, "status": {"$in": ["sending", "pending", "in_progress"]}},
+            {"$set": {"status": "paused", "updated_at": datetime.now(timezone.utc)}},
         )
         if result.modified_count == 0:
             raise HTTPException(status_code=400, detail="Campaign not found or cannot be paused")
@@ -400,7 +422,7 @@ async def resume_campaign(
         user_id = current_user.get("user_id") or current_user.get("id")
         result = await db.campaigns.update_one(
             {"_id": campaign_id, "user_id": user_id, "status": "paused"},
-            {"$set": {"status": "sending", "updated_at": datetime.now()}},
+            {"$set": {"status": "sending", "updated_at": datetime.now(timezone.utc)}},
         )
         if result.modified_count == 0:
             raise HTTPException(status_code=400, detail="Campaign not found or not paused")
@@ -424,13 +446,13 @@ async def cancel_campaign(
         # Set campaign to cancelled
         await db.campaigns.update_one(
             {"_id": campaign_id, "user_id": user_id},
-            {"$set": {"status": "cancelled", "updated_at": datetime.now()}},
+            {"$set": {"status": "cancelled", "completed_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}},
         )
 
         # Cancel all pending/retry_wait queue items in messages
         queue_result = await db.messages.update_many(
             {"campaign_id": campaign_id, "status": {"$in": ["pending", "retry_wait"]}},
-            {"$set": {"status": "cancelled", "updated_at": datetime.now().isoformat()}},
+            {"$set": {"status": "cancelled", "updated_at": datetime.now(timezone.utc).isoformat()}},
         )
 
         # Cancel pending batches
@@ -473,18 +495,28 @@ async def get_campaign_live_stats(
             counts[doc["_id"]] = doc["count"]
 
         total = sum(counts.values())
-        delivered = counts.get("delivered", 0)
+        # Support both "sent" (new scheduler spec) and "delivered" (legacy)
+        delivered = counts.get("sent", 0) + counts.get("delivered", 0)
         pending = counts.get("pending", 0)
         processing = counts.get("processing", 0)
         retry_wait = counts.get("retry_wait", 0)
-        failed_final = counts.get("failed_final", 0)
+        # Support both "failed_permanently" (new) and "failed_final" (legacy)
+        failed_final = counts.get("failed_permanently", 0) + counts.get("failed_final", 0)
         cancelled = counts.get("cancelled", 0)
 
         # Convert datetimes
         c_status = campaign.get("status", "pending")
         created_at = campaign.get("created_at")
         if isinstance(created_at, datetime):
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
             created_at = created_at.isoformat()
+
+        completed_at = campaign.get("completed_at")
+        if isinstance(completed_at, datetime):
+            if completed_at.tzinfo is None:
+                completed_at = completed_at.replace(tzinfo=timezone.utc)
+            completed_at = completed_at.isoformat()
 
         return {
             "campaign_id": campaign_id,
@@ -500,6 +532,7 @@ async def get_campaign_live_stats(
             "total_batches": campaign.get("total_batches", 0),
             "segment_stats": campaign.get("segment_stats", {}),
             "created_at": created_at,
+            "completed_at": completed_at,
             "progress_pct": round(delivered / total * 100, 1) if total > 0 else 0,
         }
     except HTTPException:

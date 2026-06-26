@@ -47,7 +47,7 @@ const segments = [
   { value: 'potential_bulk', label: 'Potential (Bulk)', icon: ShoppingBag, color: '#8B5CF6' },
   { value: 'loyal_frequent', label: 'Loyal (Frequent)', icon: Star, color: '#3B82F6' },
   { value: 'boring', label: 'Occasional', icon: User, color: '#6B7280' },
-  { value: 'new_customer', label: 'New Customer', icon: User, color: '#10B981' },
+
 ];
 
 /* ── WhatsApp Bubble (renders hydrated text) ── */

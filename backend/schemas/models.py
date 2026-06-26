@@ -5,7 +5,7 @@ Phase 1 Schema Refinement:
   - Added: OfferCreate, OfferResponse, OfferUpdate (new offers collection)
   - Added: upload_cycle to ShopCreate / ShopResponse
   - Added: period_tag, content_hash, row_count to FileMetadata
-  - Added: NEW_CUSTOMER to CustomerCategory enum
+
   - Added: previous_segment, segment_changed to CustomerInsightResponse
   - Added: campaign_id, offer_id, failure_reason to MessageResponse
   - Added: MonitoringStats response model
@@ -27,14 +27,14 @@ class CustomerCategory(str, Enum):
     Customer classification categories — 6-tier Hybrid RFM+B Intelligence.
     
     Waterfall order (Phase 1 additions in comments):
-      Rule 0: NEW_CUSTOMER  — ≤2 purchases in last 30 days AND previous_segment is None
+
       Rule 1: VIP            — rfm_score ≥ 12 AND (m_score ≥ 4 OR f_score ≥ 4)
       Rule 2: AT_RISK        — r_score ≤ 2 + (f+m)≥5  OR  prev=VIP/Loyal AND recency_days≥30
       Rule 3: POTENTIAL_BULK — 5≤total≤11 AND b_score≥4
       Rule 4: LOYAL_FREQUENT — 5≤total≤11 AND f_score≥3 AND f≥m
       Rule 5: BORING         — everything else (display as "Occasional" in frontend)
     """
-    NEW_CUSTOMER   = "new_customer"   # NEW: first-time / second-visit prospects
+
     VIP            = "vip"            # Champions
     AT_RISK        = "at_risk"        # Lapsing High-Potentials
     POTENTIAL_BULK = "potential_bulk" # Pantry Stockers
@@ -93,7 +93,7 @@ class MessagePriority(int, Enum):
     """Message priority levels — Hybrid RFM+B Intelligence."""
     VIP            = 1
     AT_RISK        = 1
-    NEW_CUSTOMER   = 2  # NEW: new customers handled promptly
+
     POTENTIAL_BULK = 2
     LOYAL_FREQUENT = 3
     BORING         = 4

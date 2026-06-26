@@ -14,8 +14,8 @@ const BatchDistributionPreview = ({ classifications, batchSize }) => {
       { type: 'at_risk', count: classifications.at_risk || 0, label: 'At-Risk', icon: AlertTriangle, color: 'text-red-400', description: 'Priority 2' },
       { type: 'potential_bulk', count: classifications.potential_bulk || 0, label: 'Potential (Bulk)', icon: ShoppingBag, color: 'text-purple-400', description: 'Priority 3' },
       { type: 'loyal_frequent', count: classifications.loyal_frequent || 0, label: 'Loyal (Frequent)', icon: Star, color: 'text-blue-400', description: 'Priority 4' },
-      { type: 'boring', count: classifications.boring || 0, label: 'Occasional', icon: User, color: 'text-slate-400', description: 'Priority 5' },
-      { type: 'new_customer', count: classifications.new_customer || 0, label: 'New', icon: User, color: 'text-emerald-400', description: 'Priority 6' }
+      { type: 'boring', count: classifications.boring || 0, label: 'Occasional', icon: User, color: 'text-slate-400', description: 'Priority 5' }
+
     ];
 
     const batches = [];

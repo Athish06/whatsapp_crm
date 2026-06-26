@@ -60,14 +60,6 @@ const SegmentTemplateSelector = ({
         bgColor: 'bg-slate-400/10',
         borderColor: 'border-slate-400/30',
         description: 'Low priority baseline'
-      },
-      'new_customer': { 
-        label: 'New Customer', 
-        icon: User, 
-        color: 'text-emerald-400',
-        bgColor: 'bg-emerald-400/10',
-        borderColor: 'border-emerald-400/30',
-        description: 'Welcome new users'
       }
     };
     return segmentMap[segment] || segmentMap['boring'];
