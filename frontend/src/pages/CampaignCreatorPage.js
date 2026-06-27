@@ -333,7 +333,7 @@ const CampaignCreatorPage = () => {
                 onClick={() => setTemplateStrategy('ai')}
                 className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${templateStrategy === 'ai' ? 'bg-[#3ECF8E] text-black shadow-sm' : 'text-muted-foreground hover:text-white'}`}
               >
-                AI Selection (Behavioral Map)
+                Automated Offers
               </button>
               <button
                 type="button"

@@ -152,6 +152,12 @@ class BatchService:
             except Exception as _offer_err:
                 import logging
                 logging.getLogger(__name__).warning(f"Offer matching skipped: {_offer_err}")
+                
+            # Fetch products to build name map
+            products_cursor = self.db.products.find({"shop_id": shop_id, "user_id": user_id})
+            prod_name_map = {}
+            async for p in products_cursor:
+                prod_name_map[p["product_id"]] = p.get("product_name") or p["product_id"]
         
         # Split into batches
         total_batches = math.ceil(len(customers) / batch_size)
@@ -243,7 +249,7 @@ class BatchService:
 
                 # Generate formatted offer list
                 from services.offers_service import OffersService
-                offer_list_str = OffersService.format_offer_list(customer_offers)
+                offer_list_str = OffersService.format_offer_list(customer_offers, prod_name_map if shop_id else None)
 
                 # Build unified data dict for placeholder substitution
                 hydration_data = {

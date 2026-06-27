@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import {
   Activity, CheckCircle, XCircle, Square, RefreshCw, Clock, Users, Crown,
   AlertTriangle, Package, User, TrendingUp, RotateCcw, Store, Pause, Play,
-  Ban, Shield, MessageCircle, Eye, EyeOff, ShoppingBag, Star
+  Ban, Shield, MessageCircle, Eye, EyeOff, ShoppingBag, Star, ChevronDown, ChevronRight
 } from 'lucide-react';
 import { batchesAPI, shopsAPI, monitoringAPI } from '../lib/api';
 import { toast } from 'sonner';
@@ -205,6 +205,9 @@ const BatchDrillDown = ({ shopId, campaignId }) => {
   const [selectedBatch, setSelectedBatch] = useState(null);
   const [batchDetail, setBatchDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [expanded, setExpanded] = useState({});
+
+  const toggleExpand = (id) => setExpanded(prev => ({...prev, [id]: !prev[id]}));
 
   useEffect(() => {
     const loadBatches = async () => {
@@ -255,23 +258,41 @@ const BatchDrillDown = ({ shopId, campaignId }) => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#2E2E2E]">
-                {batchDetail?.messages?.map(msg => (
-                  <tr key={msg.id} className="hover:bg-[#1C1C1C]/50">
-                    <td className="p-2 text-white">
-                      {msg.customer_name} <span className="text-muted-foreground ml-1">({msg.phone_number})</span>
-                    </td>
-                    <td className="p-2">
-                      {msg.status === 'sent' || msg.status === 'delivered' ? (
-                        <span className="text-[#3ECF8E] flex items-center gap-1"><CheckCircle className="w-3 h-3"/> Delivered</span>
-                      ) : msg.status.includes('fail') ? (
-                        <span className="text-red-400 flex items-center gap-1"><AlertTriangle className="w-3 h-3"/> Failed</span>
-                      ) : (
-                        <span className="text-yellow-400 flex items-center gap-1"><Clock className="w-3 h-3"/> {msg.status}</span>
+                {batchDetail?.messages?.map(msg => {
+                  const isExpanded = expanded[msg.id];
+                  return (
+                    <React.Fragment key={msg.id}>
+                      <tr 
+                        onClick={() => toggleExpand(msg.id)} 
+                        className="hover:bg-[#1C1C1C]/50 cursor-pointer transition-colors"
+                      >
+                        <td className="p-2 text-white flex items-center gap-2">
+                          {isExpanded ? <ChevronDown className="w-3 h-3 text-muted-foreground" /> : <ChevronRight className="w-3 h-3 text-muted-foreground" />}
+                          <span>{msg.customer_name} <span className="text-muted-foreground text-[10px] ml-1">({msg.phone_number})</span></span>
+                        </td>
+                        <td className="p-2">
+                          {msg.status === 'sent' || msg.status === 'delivered' ? (
+                            <span className="text-[#3ECF8E] flex items-center gap-1"><CheckCircle className="w-3 h-3"/> Delivered</span>
+                          ) : msg.status.includes('fail') ? (
+                            <span className="text-red-400 flex items-center gap-1"><AlertTriangle className="w-3 h-3"/> Failed</span>
+                          ) : (
+                            <span className="text-yellow-400 flex items-center gap-1"><Clock className="w-3 h-3"/> {msg.status}</span>
+                          )}
+                        </td>
+                        <td className="p-2 text-muted-foreground">{new Date(msg.updated_at).toLocaleTimeString()}</td>
+                      </tr>
+                      {isExpanded && (
+                        <tr>
+                          <td colSpan="3" className="p-3 bg-black/40 border-b border-[#2E2E2E]">
+                            <div className="bg-[#121212] p-3 rounded-md border border-[#2E2E2E] text-xs font-mono whitespace-pre-wrap text-white">
+                              {msg.message_content || <span className="text-muted-foreground italic">No message content available</span>}
+                            </div>
+                          </td>
+                        </tr>
                       )}
-                    </td>
-                    <td className="p-2 text-muted-foreground">{new Date(msg.updated_at).toLocaleTimeString()}</td>
-                  </tr>
-                ))}
+                    </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -526,15 +547,15 @@ const CampaignCard = ({ campaign, onRefresh }) => {
           <p className="text-lg font-bold font-mono text-white">{total}</p>
         </div>
         <div className="bg-[#121212] rounded-lg p-2.5 text-center">
-          <p className="text-[10px] text-[#3ECF8E] mb-0.5">Delivered ✓</p>
+          <p className="text-[10px] text-[#3ECF8E] mb-0.5">Delivered</p>
           <p className="text-lg font-bold font-mono text-[#3ECF8E]">{delivered}</p>
         </div>
         <div className="bg-[#121212] rounded-lg p-2.5 text-center">
-          <p className="text-[10px] text-yellow-400 mb-0.5">Retry ⏳</p>
+          <p className="text-[10px] text-yellow-400 mb-0.5">Retry</p>
           <p className="text-lg font-bold font-mono text-yellow-400">{retryWait}</p>
         </div>
         <div className="bg-[#121212] rounded-lg p-2.5 text-center">
-          <p className="text-[10px] text-red-400 mb-0.5">Failed ❌</p>
+          <p className="text-[10px] text-red-400 mb-0.5">Failed</p>
           <p className="text-lg font-bold font-mono text-red-400">{failedFinal}</p>
         </div>
       </div>
@@ -777,7 +798,7 @@ const BatchMonitorPage = () => {
                           <span className="text-xs font-mono w-8 text-right">{p}%</span>
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-xs capitalize">{b.status === 'sending' ? '🚀 ' : '⏳ '}{b.status}</td>
+                      <td className="px-4 py-3 text-xs capitalize">{b.status}</td>
                     </tr>
                   );
                 })}

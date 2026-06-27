@@ -108,7 +108,7 @@ class MonitoringService:
         messages = await self.db.messages.find(
             {"batch_id": batch_id, "user_id": user_id},
             {"_id": 0, "id": 1, "customer_name": 1, "phone_number": 1, "customer_segment": 1, 
-             "status": 1, "failure_reason": 1, "error_log": 1, "priority": 1, "updated_at": 1}
+             "status": 1, "failure_reason": 1, "error_log": 1, "priority": 1, "updated_at": 1, "message_content": 1}
         ).sort("updated_at", -1).to_list(5000)
 
         return {
