@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
-  Activity, CheckCircle, XCircle, Square, RefreshCw, Clock, Users, Zap, Crown,
+  Activity, CheckCircle, XCircle, Square, RefreshCw, Clock, Users, Crown,
   AlertTriangle, Package, User, TrendingUp, RotateCcw, Store, Pause, Play,
-  Ban, ChevronDown, ChevronUp, Shield, MessageCircle, Eye, EyeOff, ShoppingBag, Star
+  Ban, Shield, MessageCircle, Eye, EyeOff, ShoppingBag, Star
 } from 'lucide-react';
-import { batchesAPI, shopsAPI } from '../lib/api';
+import { batchesAPI, shopsAPI, monitoringAPI } from '../lib/api';
 import { toast } from 'sonner';
 
 /* ── Segment config ── */
@@ -196,11 +197,193 @@ const DLQDesk = ({ campaignId, onRefresh }) => {
 
 
 /* ══════════════════════════════════════════════════════════════════════
+   Batch Drill Down
+   ══════════════════════════════════════════════════════════════════════ */
+const BatchDrillDown = ({ shopId, campaignId }) => {
+  const [batches, setBatches] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedBatch, setSelectedBatch] = useState(null);
+  const [batchDetail, setBatchDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  useEffect(() => {
+    const loadBatches = async () => {
+      try {
+        const res = await monitoringAPI.getCampaignDetail(shopId, campaignId);
+        setBatches(res.data.batches || []);
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadBatches();
+  }, [shopId, campaignId]);
+
+  const loadBatchDetail = async (batchId) => {
+    setDetailLoading(true);
+    try {
+      const res = await monitoringAPI.getBatchDetail(shopId, batchId);
+      setBatchDetail(res.data);
+    } catch (err) {
+      toast.error('Failed to load batch details');
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  if (loading) return <div className="p-4 text-center text-muted-foreground animate-pulse text-xs">Loading batches…</div>;
+
+  if (selectedBatch) {
+    return (
+      <div className="bg-[#1C1C1C] border-t border-[#2E2E2E] p-4 bg-black/20">
+        <button onClick={() => setSelectedBatch(null)} className="mb-4 flex items-center gap-2 text-xs text-muted-foreground hover:text-white transition-colors">
+          <RotateCcw className="w-3 h-3" /> Back to Batches
+        </button>
+        <h4 className="font-bold text-sm text-white mb-3">Batch #{selectedBatch.batch_number} Details</h4>
+        
+        {detailLoading ? (
+          <div className="text-center py-4 text-muted-foreground animate-pulse text-xs">Loading messages…</div>
+        ) : (
+          <div className="bg-[#121212] rounded-lg border border-[#2E2E2E] overflow-hidden max-h-80 overflow-y-auto scrollbar-thin">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-[#1C1C1C] border-b border-[#2E2E2E] text-muted-foreground sticky top-0">
+                <tr>
+                  <th className="p-2 font-medium">Customer</th>
+                  <th className="p-2 font-medium">Status</th>
+                  <th className="p-2 font-medium">Updated</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#2E2E2E]">
+                {batchDetail?.messages?.map(msg => (
+                  <tr key={msg.id} className="hover:bg-[#1C1C1C]/50">
+                    <td className="p-2 text-white">
+                      {msg.customer_name} <span className="text-muted-foreground ml-1">({msg.phone_number})</span>
+                    </td>
+                    <td className="p-2">
+                      {msg.status === 'sent' || msg.status === 'delivered' ? (
+                        <span className="text-[#3ECF8E] flex items-center gap-1"><CheckCircle className="w-3 h-3"/> Delivered</span>
+                      ) : msg.status.includes('fail') ? (
+                        <span className="text-red-400 flex items-center gap-1"><AlertTriangle className="w-3 h-3"/> Failed</span>
+                      ) : (
+                        <span className="text-yellow-400 flex items-center gap-1"><Clock className="w-3 h-3"/> {msg.status}</span>
+                      )}
+                    </td>
+                    <td className="p-2 text-muted-foreground">{new Date(msg.updated_at).toLocaleTimeString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-[#1C1C1C] border-t border-[#2E2E2E] p-4 bg-black/20">
+      <h4 className="font-bold text-sm text-white mb-3">Campaign Batches</h4>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+        {batches.map(b => (
+          <button 
+            key={b.id} 
+            onClick={() => { setSelectedBatch(b); loadBatchDetail(b.id); }}
+            className="text-left bg-[#121212] border border-[#2E2E2E] hover:border-gray-500 rounded p-3 transition-colors"
+          >
+            <div className="flex justify-between items-center mb-1">
+              <span className="font-semibold text-xs text-white">Batch #{b.batch_number}</span>
+            </div>
+            <div className="text-[10px] text-muted-foreground flex justify-between">
+              <span className="capitalize">{b.status}</span>
+              <span>{b.customer_count} msgs</span>
+            </div>
+          </button>
+        ))}
+        {batches.length === 0 && <p className="text-xs text-muted-foreground col-span-3">No batches found.</p>}
+      </div>
+    </div>
+  );
+};
+
+/* ══════════════════════════════════════════════════════════════════════
+   Period Summary Widget
+   ══════════════════════════════════════════════════════════════════════ */
+const PeriodSummaryWidget = ({ shopId }) => {
+  const [period, setPeriod] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  });
+  const [summary, setSummary] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!shopId) return;
+    const fetchSummary = async () => {
+      setLoading(true);
+      try {
+        const res = await monitoringAPI.getPeriodSummary(shopId, period);
+        setSummary(res.data);
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchSummary();
+  }, [shopId, period]);
+
+  if (!shopId) return null;
+
+  return (
+    <div className="bg-[#1C1C1C] border border-[#2E2E2E] rounded-xl p-5 mb-8">
+      <div className="flex justify-between items-center mb-4">
+        <div className="flex items-center gap-2">
+          <Clock className="w-5 h-5 text-[#3ECF8E]" />
+          <h3 className="font-bold text-lg text-white">Monthly Report</h3>
+        </div>
+        <input 
+          type="month" 
+          value={period}
+          onChange={(e) => setPeriod(e.target.value)}
+          className="px-3 py-1.5 bg-[#121212] border border-[#2E2E2E] rounded-md focus:outline-none focus:border-[#3ECF8E] text-white text-sm"
+        />
+      </div>
+
+      {loading ? (
+        <div className="py-4 text-center text-muted-foreground animate-pulse text-sm">Loading summary…</div>
+      ) : summary ? (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="bg-[#121212] p-3 rounded-lg border border-[#2E2E2E]">
+            <p className="text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Total Campaigns</p>
+            <p className="text-xl font-bold text-white">{summary.total_campaigns}</p>
+          </div>
+          <div className="bg-[#3ECF8E]/10 p-3 rounded-lg border border-[#3ECF8E]/30">
+            <p className="text-[10px] text-[#3ECF8E] mb-1 uppercase tracking-wider">Total Delivered</p>
+            <p className="text-xl font-bold text-[#3ECF8E]">{summary.total_delivered}</p>
+          </div>
+          <div className="bg-red-500/10 p-3 rounded-lg border border-red-500/30">
+            <p className="text-[10px] text-red-400 mb-1 uppercase tracking-wider">Total Failed</p>
+            <p className="text-xl font-bold text-red-400">{summary.total_failed}</p>
+          </div>
+          <div className="bg-blue-500/10 p-3 rounded-lg border border-blue-500/30">
+            <p className="text-[10px] text-blue-400 mb-1 uppercase tracking-wider">Avg Success Rate</p>
+            <p className="text-xl font-bold text-blue-400">{Math.round(summary.avg_success_rate * 100)}%</p>
+          </div>
+        </div>
+      ) : (
+        <div className="py-4 text-center text-muted-foreground text-sm">No data for this period.</div>
+      )}
+    </div>
+  );
+};
+
+/* ══════════════════════════════════════════════════════════════════════
    Campaign Card — Real-Time Progress + Controls
    ══════════════════════════════════════════════════════════════════════ */
 const CampaignCard = ({ campaign, onRefresh }) => {
   const [stats, setStats]     = useState(null);
   const [actionLoading, setActionLoading] = useState('');
+  const [view, setView]       = useState(null); // 'dlq', 'batches'
   const intervalRef = useRef(null);
 
   const campaignId = campaign._id;
@@ -218,11 +401,7 @@ const CampaignCard = ({ campaign, onRefresh }) => {
 
   useEffect(() => {
     pollStats();
-    if (isActive || isPaused) {
-      intervalRef.current = setInterval(pollStats, 3000);
-    }
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [pollStats, isActive, isPaused]);
+  }, [pollStats]);
 
   const s = stats || {};
   const total     = s.total_targeted || campaign.total_customers || 1;
@@ -292,6 +471,16 @@ const CampaignCard = ({ campaign, onRefresh }) => {
           </p>
         </div>
         <div className="flex items-center gap-2 ml-3 flex-shrink-0">
+          <button 
+            onClick={() => {
+              pollStats();
+              toast.success('Live stats refreshed');
+            }}
+            className="p-1.5 hover:bg-white/10 rounded-md transition-colors text-muted-foreground hover:text-white"
+            title="Refresh Live Stats"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+          </button>
           <span className={`text-xs font-medium px-2.5 py-1 rounded-full border ${sc.bg} ${sc.text} ${sc.border}`}>
             {status.replace('_', ' ')}
           </span>
@@ -406,6 +595,23 @@ const CampaignCard = ({ campaign, onRefresh }) => {
           </div>
         </div>
       )}
+      
+      {/* ── Advanced Views (DLQ / Batches) ── */}
+      <div className="border-t border-[#2E2E2E] flex">
+        <button onClick={() => setView(view === 'dlq' ? null : 'dlq')} className={`flex-1 py-2.5 text-xs font-medium text-center transition-colors border-r border-[#2E2E2E] ${view === 'dlq' ? 'bg-red-500/10 text-red-400' : 'text-muted-foreground hover:text-white hover:bg-[#121212]'}`}>
+          <div className="flex items-center justify-center gap-1.5">
+            <Shield className="w-3 h-3" /> View DLQ & Errors
+          </div>
+        </button>
+        <button onClick={() => setView(view === 'batches' ? null : 'batches')} className={`flex-1 py-2.5 text-xs font-medium text-center transition-colors ${view === 'batches' ? 'bg-blue-500/10 text-blue-400' : 'text-muted-foreground hover:text-white hover:bg-[#121212]'}`}>
+          <div className="flex items-center justify-center gap-1.5">
+            <Package className="w-3 h-3" /> View Batch Details
+          </div>
+        </button>
+      </div>
+
+      {view === 'dlq' && <DLQDesk campaignId={campaignId} onRefresh={() => { pollStats(); onRefresh(); }} />}
+      {view === 'batches' && <BatchDrillDown shopId={campaign.shop_id} campaignId={campaignId} />}
     </div>
   );
 };
@@ -415,8 +621,11 @@ const CampaignCard = ({ campaign, onRefresh }) => {
    Main Monitor Page
    ══════════════════════════════════════════════════════════════════════ */
 const BatchMonitorPage = () => {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const shopIdQuery = searchParams.get('shopId');
+
   const [shops,        setShops]        = useState([]);
-  const [selectedShop, setSelectedShop] = useState('');
+  const [selectedShop, setSelectedShop] = useState(shopIdQuery || '');
   const [campaigns,    setCampaigns]    = useState([]);
   const [batches,      setBatches]      = useState([]);
   const [loading,      setLoading]      = useState(true);
@@ -431,12 +640,12 @@ const BatchMonitorPage = () => {
         const res = await shopsAPI.list();
         const list = res.data.shops || [];
         setShops(list);
-        if (list.length > 0 && !selectedShop) setSelectedShop(list[0].id);
+        if (list.length > 0 && !selectedShop) setSelectedShop(shopIdQuery || list[0].id);
       } catch { /* ignore */ }
     };
     loadShops();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [shopIdQuery]);
 
   const load = useCallback(async () => {
     try {
@@ -451,11 +660,8 @@ const BatchMonitorPage = () => {
     finally { setLoading(false); }
   }, []);
 
-  // Poll every 8s
   useEffect(() => {
     load();
-    const iv = setInterval(load, 8000);
-    return () => clearInterval(iv);
   }, [load]);
 
   const handleRefresh = async () => {
@@ -492,8 +698,8 @@ const BatchMonitorPage = () => {
         <div>
           <h1 className="text-4xl font-bold mb-1" style={{ fontFamily: 'Chivo, sans-serif' }}>Monitor &amp; History</h1>
           <p className="text-muted-foreground text-sm">
-            Real-time delivery logs · scheduler engine · auto-refresh 8s
-            {lastRefresh && <span className="ml-2 text-[#3ECF8E]/60">· {lastRefresh.toLocaleTimeString()}</span>}
+            Real-time delivery logs · scheduler engine
+            {lastRefresh && <span className="ml-2 text-[#3ECF8E]/60">· Last refreshed at {lastRefresh.toLocaleTimeString()}</span>}
           </p>
         </div>
 
@@ -501,7 +707,14 @@ const BatchMonitorPage = () => {
           {/* Shop Selector */}
           <div className="flex items-center gap-2 bg-[#1C1C1C] border border-[#2E2E2E] rounded-lg px-3 py-2">
             <Store className="w-4 h-4 text-muted-foreground" />
-            <select value={selectedShop} onChange={e => setSelectedShop(e.target.value)}
+            <select 
+              value={selectedShop} 
+              onChange={e => {
+                const val = e.target.value;
+                setSelectedShop(val);
+                if (val) setSearchParams({ shopId: val });
+                else setSearchParams({});
+              }}
               className="bg-transparent text-white text-sm font-medium outline-none min-w-[120px]">
               <option value="">All Shops</option>
               {shops.map(s => <option key={s.id} value={s.id}>{s.shop_name}</option>)}
@@ -516,6 +729,9 @@ const BatchMonitorPage = () => {
           </button>
         </div>
       </div>
+
+      {/* Period Summary (Only visible when a specific shop is selected) */}
+      {selectedShop && <PeriodSummaryWidget shopId={selectedShop} />}
 
       {/* Summary Stats */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">

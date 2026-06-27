@@ -96,7 +96,7 @@ const LoginPage = () => {
         <div className="w-full max-w-md">
           <div className="mb-8">
             <h1 className="text-4xl font-bold mb-2" style={{ fontFamily: 'Chivo, sans-serif' }}>
-              WhatsApp CRM Pro
+              WA CRM
             </h1>
             <p className="text-muted-foreground">
               Manage your bulk messaging campaigns efficiently

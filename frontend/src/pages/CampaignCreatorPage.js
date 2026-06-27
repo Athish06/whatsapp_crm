@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link, useLocation } from 'react-router-dom';
 import { Send, MessageCircle, Calendar, Hash, Plus, ArrowLeft, Users, Settings, TrendingUp } from 'lucide-react';
 import { toast } from 'sonner';
 import { shopsAPI, templatesAPI, customersAPI, batchesAPI, offersAPI } from '../lib/api';
@@ -22,9 +22,11 @@ const WhatsAppBubble = ({ message, segment, color }) => (
 const CampaignCreatorPage = () => {
   const { shopId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const savedState = location.state?.campaignState || {};
 
-  const [step, setStep] = useState(1);
-  const [campaignName, setCampaignName] = useState('');
+  const [step, setStep] = useState(savedState.step || 1);
+  const [campaignName, setCampaignName] = useState(savedState.campaignName || '');
 
   // Template strategy
   const [templateStrategy, setTemplateStrategy] = useState('ai');
@@ -39,19 +41,19 @@ const CampaignCreatorPage = () => {
 
   // Segment → Template mapping
   const segmentKeys = ['vip', 'at_risk', 'potential_bulk', 'loyal_frequent', 'boring'];
-  const [segmentTemplates, setSegmentTemplates] = useState({
+  const [segmentTemplates, setSegmentTemplates] = useState(savedState.segmentTemplates || {
     vip: '', at_risk: '', potential_bulk: '', loyal_frequent: '', boring: ''
   });
-  const [segmentOffers, setSegmentOffers] = useState({
+  const [segmentOffers, setSegmentOffers] = useState(savedState.segmentOffers || {
     vip: '', at_risk: '', potential_bulk: '', loyal_frequent: '', boring: ''
   });
   const [offers, setOffers] = useState([]);
 
   // Scheduling
-  const [scheduledTime, setScheduledTime] = useState('');
-  const [batchSize, setBatchSize] = useState(100);
+  const [scheduledTime, setScheduledTime] = useState(savedState.scheduledTime || '');
+  const [batchSize, setBatchSize] = useState(savedState.batchSize || 100);
   const [launching, setLaunching] = useState(false);
-  const [enableUpsell, setEnableUpsell] = useState(false);
+  const [enableUpsell, setEnableUpsell] = useState(savedState.enableUpsell || false);
 
   // Navigate to templates builder carrying context to auto-redirect back
   const handleQuickCreateTemplate = (segment) => {
@@ -60,6 +62,17 @@ const CampaignCreatorPage = () => {
         redirectToCampaign: true,
         prefilledShopId: shopId,
         prefilledSegment: segment,
+        campaignState: {
+          step: 2,
+          campaignName,
+          templateStrategy,
+          fixedProduct,
+          segmentTemplates,
+          segmentOffers,
+          scheduledTime,
+          batchSize,
+          enableUpsell
+        }
       },
     });
   };

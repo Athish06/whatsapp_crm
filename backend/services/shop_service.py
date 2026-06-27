@@ -231,20 +231,15 @@ class ShopService:
             tx_df = pd.DataFrame(tx_rows)
             prod_df = pd.DataFrame(prod_rows)
             
-            # Normalize product_type for backward compatibility
-            if "product_type" not in prod_df.columns:
-                prod_df["product_type"] = "daily"
-                if "is_premium" in prod_df.columns:
-                    prod_df.loc[prod_df["is_premium"] == True, "product_type"] = "premium"
-                if "is_bulk" in prod_df.columns:
-                    prod_df.loc[prod_df["is_bulk"] == True, "product_type"] = "bulk"
-            else:
-                prod_df["product_type"] = prod_df["product_type"].fillna("daily")
-                # Also fall back to is_premium/is_bulk if product_type is daily but flags say otherwise
-                if "is_premium" in prod_df.columns:
-                    prod_df.loc[(prod_df["product_type"] == "daily") & (prod_df["is_premium"] == True), "product_type"] = "premium"
-                if "is_bulk" in prod_df.columns:
-                    prod_df.loc[(prod_df["product_type"] == "daily") & (prod_df["is_bulk"] == True), "product_type"] = "bulk"
+            # Ensure is_premium and is_bulk exist (default to False if not)
+            if "is_premium" not in prod_df.columns:
+                prod_df["is_premium"] = False
+            if "is_bulk" not in prod_df.columns:
+                prod_df["is_bulk"] = False
+            
+            # Fill NaNs with False just in case
+            prod_df["is_premium"] = prod_df["is_premium"].fillna(False)
+            prod_df["is_bulk"] = prod_df["is_bulk"].fillna(False)
             
             # Support both old field names (quantity/amount) and new spec names (purchase_qty/total_amount)
             if "purchase_qty" in tx_df.columns:
@@ -262,10 +257,10 @@ class ShopService:
                 tx_df["amount"] = 0
             
             if not tx_df.empty and not prod_df.empty:
-                cust_tx = tx_df.merge(prod_df[['product_id', 'product_name', 'product_type']], on='product_id', how='left')
+                cust_tx = tx_df.merge(prod_df[['product_id', 'product_name', 'is_premium', 'is_bulk']], on='product_id', how='left')
                 
                 # Favorite Premium Product per category (highest total amount)
-                premium_tx = cust_tx[cust_tx['product_type'] == 'premium']
+                premium_tx = cust_tx[cust_tx['is_premium'] == True]
                 if not premium_tx.empty:
                     for cat, cat_df in premium_tx.groupby('category'):
                         # idxmax gives the index of the max value
@@ -274,7 +269,7 @@ class ShopService:
                             premium_products_by_category[str(cat)] = top_premium
                             
                 # Favorite Bulk Product per category (highest total quantity)
-                bulk_tx = cust_tx[cust_tx['product_type'] == 'bulk']
+                bulk_tx = cust_tx[cust_tx['is_bulk'] == True]
                 if not bulk_tx.empty:
                     for cat, cat_df in bulk_tx.groupby('category'):
                         if not cat_df.empty:

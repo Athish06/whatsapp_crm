@@ -422,7 +422,10 @@ const TemplatesPage = () => {
       setMode('list'); setEditing(null); await load();
       // If we came from campaign creator, navigate back
       if (isRedirect && redirectState.prefilledShopId) {
-        navigate(`/campaign/new/${redirectState.prefilledShopId}`, { replace: true });
+        navigate(`/campaign/new/${redirectState.prefilledShopId}`, { 
+          replace: true, 
+          state: { campaignState: redirectState.campaignState } 
+        });
       }
     } catch { toast.error('Failed to save template'); }
     finally { setSaving(false); }
@@ -463,7 +466,10 @@ const TemplatesPage = () => {
         <div>
           {isRedirect && (
             <button
-              onClick={() => navigate(`/campaign/new/${redirectState.prefilledShopId}`, { replace: true })}
+              onClick={() => navigate(`/campaign/new/${redirectState.prefilledShopId}`, { 
+                replace: true, 
+                state: { campaignState: redirectState.campaignState } 
+              })}
               className="flex items-center gap-1 text-sm text-muted-foreground hover:text-white transition-colors mb-2"
             >
               <ArrowLeft className="w-3.5 h-3.5" /> Back to Campaign

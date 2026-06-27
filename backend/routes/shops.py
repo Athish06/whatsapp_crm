@@ -66,16 +66,61 @@ async def list_shops(
 @router.get("/{shop_id}/products")
 async def list_shop_products(
     shop_id: str,
+    category: Optional[str] = None,
+    search: Optional[str] = None,
     current_user: dict = Depends(get_current_user),
     db: Any = Depends(Database.get_database),
 ):
-    """List all products for a shop."""
+    """List all products for a shop, optionally filtered."""
     try:
-        user_id = current_user.get("user_id") or current_user.get("id")
-        products = await db.products.find({"shop_id": shop_id, "user_id": user_id}, {"_id": 0}).to_list(1000)
+        from services.product_service import ProductService
+        service = ProductService(db)
+        products = await service.get_products(shop_id, category, search)
         return {"products": products}
     except Exception as e:
         logger.error(f"Error listing products: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ProductUpdateRequest(BaseModel):
+    is_premium: Optional[bool] = None
+    is_bulk: Optional[bool] = None
+
+@router.patch("/{shop_id}/products/{product_id}")
+async def update_shop_product(
+    shop_id: str,
+    product_id: str,
+    body: ProductUpdateRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Any = Depends(Database.get_database),
+):
+    """Update premium/bulk status of a product."""
+    try:
+        from services.product_service import ProductService
+        service = ProductService(db)
+        success = await service.update_product(shop_id, product_id, body.dict(exclude_unset=True))
+        if not success:
+            raise HTTPException(status_code=400, detail="Update failed or no valid fields provided")
+        return {"success": True, "message": "Product updated"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating product: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/{shop_id}/recalculate-insights")
+async def trigger_recalculate_insights(
+    shop_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Any = Depends(Database.get_database),
+):
+    """Manually trigger recalculation of customer insights after product edits."""
+    try:
+        from services.insights_service import recalculate_all_insights
+        count = await recalculate_all_insights(db, shop_id)
+        return {"success": True, "recalculated_count": count}
+    except Exception as e:
+        logger.error(f"Error recalculating insights: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

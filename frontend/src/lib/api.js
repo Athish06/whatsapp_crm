@@ -172,3 +172,9 @@ export const monitoringAPI = {
   rescheduleFailed: (shopId, campaignId, mode) => api.post(`/shops/${shopId}/monitoring/reschedule/${campaignId}`, null, { params: { mode } }),
   getPeriodSummary: (shopId, periodTag) => api.get(`/shops/${shopId}/monitoring/periods`, { params: { period_tag: periodTag } }),
 };
+
+export const productsAPI = {
+  list: (shopId, params) => api.get(`/shops/${shopId}/products`, { params }),
+  update: (shopId, productId, data) => api.patch(`/shops/${shopId}/products/${productId}`, data),
+  recalculateInsights: (shopId) => api.post(`/shops/${shopId}/recalculate-insights`),
+};

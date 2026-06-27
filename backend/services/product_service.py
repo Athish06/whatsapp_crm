@@ -176,3 +176,48 @@ class ProductService:
             "product_types": product_type_breakdown,
             "premium_threshold": round(premium_threshold_global, 2),
         }
+
+    async def get_products(self, shop_id: str, category: Optional[str] = None, search: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Fetch products for a shop, optionally filtered by category and search term."""
+        query = {"shop_id": shop_id}
+        if category:
+            query["category"] = category
+        if search:
+            query["product_name"] = {"$regex": search, "$options": "i"}
+            
+        cursor = self.db.products.find(query, {"_id": 0}).sort("product_name", 1)
+        products = [doc async for doc in cursor]
+        return products
+        
+    async def update_product(self, shop_id: str, product_id: str, updates: Dict[str, Any]) -> bool:
+        """Update specific fields of a product."""
+        # Only allow updating specific fields to prevent malicious overwrites
+        allowed_updates = {}
+        if "is_premium" in updates:
+            allowed_updates["is_premium"] = bool(updates["is_premium"])
+        if "is_bulk" in updates:
+            allowed_updates["is_bulk"] = bool(updates["is_bulk"])
+            
+        if not allowed_updates:
+            return False
+            
+        # Get current state to derive product_type accurately
+        current_prod = await self.db.products.find_one({"shop_id": shop_id, "product_id": product_id})
+        if not current_prod:
+            return False
+            
+        final_is_premium = allowed_updates.get("is_premium", current_prod.get("is_premium", False))
+        final_is_bulk = allowed_updates.get("is_bulk", current_prod.get("is_bulk", False))
+        
+        if final_is_premium:
+            allowed_updates["product_type"] = "premium"
+        elif final_is_bulk:
+            allowed_updates["product_type"] = "bulk"
+        else:
+            allowed_updates["product_type"] = "daily"
+            
+        result = await self.db.products.update_one(
+            {"shop_id": shop_id, "product_id": product_id},
+            {"$set": allowed_updates}
+        )
+        return result.modified_count > 0

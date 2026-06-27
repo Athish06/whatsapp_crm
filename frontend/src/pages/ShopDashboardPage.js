@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { Upload, Users, ShoppingBag, Receipt, PlusCircle, Activity, CheckCircle, Database, Trash2, AlertTriangle, ArrowLeft } from 'lucide-react';
+import { Upload, Users, ShoppingBag, Receipt, PlusCircle, Activity, CheckCircle, Database, Trash2, AlertTriangle, ArrowLeft, Edit } from 'lucide-react';
 import { toast } from 'sonner';
 import { shopsAPI } from '../lib/api';
+import ProductEditModal from '../components/ProductEditModal';
 
 /* ==========================================
    Column Mapping Modal (inline)
@@ -240,8 +241,8 @@ const ShopDashboardPage = () => {
   const navigate = useNavigate();
   const [shop, setShop] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [processResults, setProcessResults] = useState({});
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(null); // 'campaign' | 'shop' | null
+  const [editingCategory, setEditingCategory] = useState(null);
 
   const loadShop = useCallback(async () => {
     try {
@@ -259,7 +260,6 @@ const ShopDashboardPage = () => {
   }, [loadShop]);
 
   const handleUploadComplete = (dataType, result) => {
-    setProcessResults(prev => ({ ...prev, [dataType]: result }));
     loadShop();
   };
 
@@ -362,7 +362,7 @@ const ShopDashboardPage = () => {
             Offers
           </Link>
           <Link
-            to={`/shop/${id}/monitoring`}
+            to={`/monitor?shopId=${id}`}
             className="flex items-center px-4 py-2 bg-[#1C1C1C] border border-[#2E2E2E] text-white font-medium rounded-md hover:bg-[#2A2A2A] transition-colors"
           >
             Monitoring
@@ -473,7 +473,16 @@ const ShopDashboardPage = () => {
                           <span className="text-white font-medium">{cat}</span>
                           <span className="text-muted-foreground ml-2">→ {info.product_name}</span>
                         </div>
-                        <span className="text-xs text-[#8B5CF6] font-mono">{info.total_qty} units</span>
+                        <div className="flex items-center gap-3">
+                          <span className="text-xs text-[#8B5CF6] font-mono">{info.total_qty} units</span>
+                          <button 
+                            onClick={() => setEditingCategory(cat)}
+                            className="p-1 text-muted-foreground hover:text-white hover:bg-[#2E2E2E] rounded transition-colors"
+                            title="Edit Premium/Bulk Picks"
+                          >
+                            <Edit className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                       {/* Premium & Bulk details per category */}
                       {(premiumProducts[cat] || bulkProducts[cat]) && (
@@ -568,6 +577,17 @@ const ShopDashboardPage = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {editingCategory && (
+        <ProductEditModal 
+          shopId={id} 
+          category={editingCategory} 
+          onClose={() => {
+            setEditingCategory(null);
+            loadShop();
+          }} 
+        />
       )}
     </div>
   );

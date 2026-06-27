@@ -40,7 +40,7 @@ const Sidebar = () => {
       <div className="p-4 border-b border-[#2E2E2E] flex items-center justify-between">
         {!collapsed && (
           <h2 className="font-bold text-lg" style={{ fontFamily: 'Chivo, sans-serif' }}>
-            WA CRM Pro
+            WA CRM
           </h2>
         )}
         <button
